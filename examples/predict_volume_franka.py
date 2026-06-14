@@ -98,7 +98,7 @@ def run(geom=(0.16, 0.16, 0.06), n_grid=56):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(7.6, 5.0))
-    for name, (ty, eta, c) in LAWS.items():
+    for name, (_ty, _eta, c) in LAWS.items():
         st, Fz, _ = results[name]
         lbl = name if name == "truth (200, 40)" else \
             f"{name}  (force err {scores[name][0]*100:.0f}%)"
