@@ -17,7 +17,8 @@ class FrankaArm:
     Q_UP = np.array([0.0, -0.3, 0.0, -1.9, 0.0, 1.6, 0.79])
     Q_DOWN = np.array([0.0, 0.35, 0.0, -2.4, 0.0, 2.75, 0.79])
 
-    def __init__(self, height: int = 480, width: int = 640, ft_sensor: bool = False):
+    def __init__(self, height: int = 480, width: int = 640, ft_sensor: bool = False,
+                 hide_gripper: bool = False):
         import mujoco
         from robot_descriptions import panda_mj_description
 
@@ -47,6 +48,15 @@ class FrankaArm:
         if ft_sensor and self.model.nsensor:
             fid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "wrist_force")
             self._ft = int(self.model.sensor_adr[fid])
+        if hide_gripper:
+            # the squeeze tool is a flat PLATE (the box collider), not the Panda's jaws;
+            # make the gripper fingers + hand flange invisible so the render matches the
+            # physics (arm + mounted plate). Collision is unaffected (rgba is render-only).
+            for gid in range(self.model.ngeom):
+                bid = int(self.model.geom_bodyid[gid])
+                bname = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, bid) or ""
+                if "finger" in bname or bname == "hand":
+                    self.model.geom_rgba[gid, 3] = 0.0
         # the default offscreen framebuffer is 640x480; enlarge it so any requested size renders
         self.model.vis.global_.offwidth = max(int(self.model.vis.global_.offwidth), width)
         self.model.vis.global_.offheight = max(int(self.model.vis.global_.offheight), height)
