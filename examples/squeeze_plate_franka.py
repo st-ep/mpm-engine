@@ -131,8 +131,8 @@ def run(n_grid=48, v_plate=0.08, eta=40.0, tau_y=200.0, density=1000.0, bulk=9.0
             out[:, 2] = p[:, 2] + z_off
             return out
 
-    rec = {k: [] for k in
-           ("t", "F_plate", "P_grav", "KE", "X1", "X2", "Pvol", "strain", "gap_mm")}
+    rec = {k: [] for k in ("t", "F_plate", "F_stress", "P_grav", "KE", "X1", "X2", "Pvol",
+                           "strain", "gap_mm")}
     prev_z = z
     rframe = 0
     for f in range(n_frames + 1):
@@ -140,27 +140,29 @@ def run(n_grid=48, v_plate=0.08, eta=40.0, tau_y=200.0, density=1000.0, bulk=9.0
         vz = (z_new - prev_z) / frame_dt
         if f > 0:
             backend.set_tool_kinematics(tool, center=(cx, cy, prev_z), velocity=(0, 0, vz))
+            backend.reset_tool_force(tool)             # accumulate the impulse over this frame
             backend.step(dt, substeps)
         z = z_new; prev_z = z_new
         # per-frame scalars for the power-balance identification
         x = s.x(); v = s.v(); L = s.L(); cau = s.cauchy(); vol = s.vol()
-        # plate reaction force = INT sigma_zz dA over the contact, estimated from the top
-        # contact layer (thickness T_layer, so /T_layer is dimensionally consistent), exactly
-        # as the validated 2D test. We report the NET traction (no compressive gate: a gate
-        # would drop the edge-extrusion tension that genuinely offsets the net force, and was
-        # measured to OVER-count it). Reaction reported as +Fz (compression -> positive), so
-        # P_plate = +v_plate*F_react.
+        # PRIMARY plate reaction = the Newton-EXACT grid impulse the collider imposes:
+        # F = sum_substeps sum_nodes m*(v_free - v_imposed) / frame_dt. No contact band, no
+        # T_layer, no gating -- the calibrated force (this is what MuJoCo's wrist sensor would
+        # read back). +Fz in compression, so P_plate = +v_plate*F_react.
+        F_react = float(backend.get_tool_reaction(tool, frame_dt)[2]) if f > 0 else 0.0
+        # diagnostic: the stress-integral surface-band estimator (the 2D method) for comparison
         m_xy = (np.abs(x[:, 0] - cx) < plate_hx) & (np.abs(x[:, 1] - cy) < plate_hy)
         z_top = float(np.percentile(x[m_xy, 2], 98)) if m_xy.any() else 0.0
         band = m_xy & (x[:, 2] > z_top - T_layer)
         szz = cau[:, 2, 2]
-        F_react = float(-np.sum(szz[band] * vol[band]) / T_layer) if band.sum() >= 5 else 0.0
+        F_stress = float(-np.sum(szz[band] * vol[band]) / T_layer) if band.sum() >= 5 else 0.0
         n_contact = int(band.sum())
         gd = equivalent_shear_rate(L)
         p = -(cau[:, 0, 0] + cau[:, 1, 1] + cau[:, 2, 2]) / 3.0      # 3D-trace pressure
         div_v = L[:, 0, 0] + L[:, 1, 1] + L[:, 2, 2]                 # tr(L) = div(v)
         rec["t"].append(f * frame_dt)
         rec["F_plate"].append(F_react)
+        rec["F_stress"].append(F_stress)
         rec["P_grav"].append(float(np.sum(density * (-G_MAG) * v[:, 2] * vol)))
         rec["KE"].append(float(0.5 * density * np.sum(vol * np.sum(v ** 2, axis=1))))
         rec["X1"].append(float(np.sum(gd * vol)))
@@ -191,7 +193,8 @@ def run(n_grid=48, v_plate=0.08, eta=40.0, tau_y=200.0, density=1000.0, bulk=9.0
             plt.close(fig); rframe += 1
         if f % 10 == 0:
             print(f"frame {f:3d}/{n_frames} strain={rec['strain'][-1]*100:4.1f}% "
-                  f"F_react={abs(F_react):6.1f}N gap={rec['gap_mm'][-1]:5.1f}mm nc={n_contact}")
+                  f"F_grid={abs(F_react):6.1f}N (stress {abs(F_stress):6.1f}N) "
+                  f"gap={rec['gap_mm'][-1]:5.1f}mm nc={n_contact}")
 
     # --- identification + comparison --------------------------------------------------
     t_lo, t_hi = 0.12 * t_press, 0.92 * t_press
@@ -241,9 +244,13 @@ def _figure(rec, ident, res, path):
     import matplotlib.pyplot as plt
     fig, (a0, a1) = plt.subplots(1, 2, figsize=(11, 4.2))
     st = np.array(rec["strain"]) * 100
-    a0.plot(st, np.abs(rec["F_plate"]), color="#d9480f", lw=2)
+    a0.plot(st, np.abs(rec["F_stress"]), color="#adb5bd", lw=1, ls="--",
+            label="stress-integral (2D method)")
+    a0.plot(st, np.abs(rec["F_plate"]), color="#d9480f", lw=2,
+            label="grid-impulse (Newton-exact)")
     a0.set_xlabel("engineering strain  (%)"); a0.set_ylabel("plate reaction force  |F_z|  (N)")
-    a0.set_title("Arm-mounted plate: measured squeeze force"); a0.grid(alpha=0.3)
+    a0.set_title("Arm-mounted plate: measured squeeze force")
+    a0.legend(fontsize=8, loc="upper left"); a0.grid(alpha=0.3)
     a1.scatter(ident["_diss"], ident["_pred"], s=10, color="#1c7ed6", alpha=0.7)
     lim = [min(ident["_diss"]), max(ident["_diss"])]
     a1.plot(lim, lim, "k--", lw=1)

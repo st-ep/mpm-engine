@@ -46,9 +46,21 @@ class WarpMPMBackend:
 
     def get_tool_wrench(self, tool_id: int, at_center=None, **kw) -> dict:
         """Reaction wrench the material exerts on the tool (Newton's third law). Evaluate at
-        the post-step tool position (pass at_center=end-of-tick centre); compressive-gated."""
+        the post-step tool position (pass at_center=end-of-tick centre); compressive-gated.
+        This is the stress-integral estimator (uncalibrated); for the calibrated value use
+        reset_tool_force/get_tool_reaction (the exact grid impulse)."""
         t = self._tools[tool_id]
         c = tuple(map(float, at_center)) if at_center is not None else t["center"]
         return box_contact_wrench(
             self.solver.x(), self.solver.cauchy(), self.solver.vol(), c, t["half"], **kw
         )
+
+    def reset_tool_force(self, tool_id: int) -> None:
+        """Zero the tool's exact reaction-impulse accumulator (call before step())."""
+        self.solver.reset_tool_force(tool_id)
+
+    def get_tool_reaction(self, tool_id: int, dt: float):
+        """Newton-EXACT reaction force on the tool from the collider grid impulse accumulated
+        since the last reset_tool_force, over elapsed time dt. Returns force[3] (compression
+        -> +z). Calibrated: no contact band, no T_layer, no gating."""
+        return self.solver.tool_force(tool_id, dt)

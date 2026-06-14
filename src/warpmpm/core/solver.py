@@ -103,6 +103,21 @@ class Solver:
             p.velocity = wp.vec3(float(velocity[0]), float(velocity[1]), float(velocity[2]))
         return self
 
+    def reset_tool_force(self, handle: int) -> Solver:
+        """Zero a box collider's Newton-exact reaction-impulse accumulator. Call before the
+        substeps you want to integrate the force over (typically before step())."""
+        self._sim.collider_params[handle].force.zero_()
+        return self
+
+    def tool_force(self, handle: int, dt: float) -> np.ndarray:
+        """Reaction force the material exerts on a box collider, from the EXACT grid impulse
+        accumulated since the last reset: F = sum_substeps sum_nodes m*(v_free - v_imposed) /
+        dt. dt is the elapsed time accumulated over (e.g. substeps*substep_dt). Returns
+        force[3] (compression -> +z). This is the calibrated alternative to the stress
+        integral; no contact band, no T_layer, no gating."""
+        impulse = self._sim.collider_params[handle].force.numpy()[0]
+        return np.asarray(impulse, dtype=float) / dt
+
     def step(self, dt: float, substeps: int = 1) -> Solver:
         for _ in range(substeps):
             self._sim.p2g2p(self._step, dt, device=self.device)
