@@ -250,8 +250,8 @@ def rollout_error(tag):
     _, F_r = _slab_force_series(scale, r["tau_y_hat"], r["eta_hat"])
     w = st > 5
     relL2 = float(np.linalg.norm((F_r - F_t)[w]) / max(np.linalg.norm(F_t[w]), 1e-9))
-    print(f"[{tag}]  PARAM err (tau_y,eta)=({r['tau_y_err']*100:.0f}%,{r['eta_err']*100:.0f}%)  "
-          f"-> ROLLOUT force err = {relL2*100:.1f}%   (law {r['tau_y_hat']:.0f},{r['eta_hat']:.0f})")
+    print(f"[{tag}]  PARAM err (tau_y,eta)=({r['tau_y_err']*100:.0f}%,{r['eta_err']*100:.0f}%) "
+          f"-> ROLLOUT force err {relL2*100:.1f}% (law {r['tau_y_hat']:.0f},{r['eta_hat']:.0f})")
     return {"tag": tag, "scale": scale, "rollout_relL2": relL2, "st": st, "F_t": F_t,
             "F_r": F_r, "param_err": (r["tau_y_err"], r["eta_err"]),
             "law": (r["tau_y_hat"], r["eta_hat"])}
