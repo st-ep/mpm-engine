@@ -1,0 +1,112 @@
+"""Composable, physics-named constitutive models.
+
+A `Material` is built by composing components and then `.resolve()`d to the warp-mpm
+fork's (material_name, params). Compose, do not subclass:
+
+    newtonian(eta=40)                          # pure viscous fluid
+    newtonian(eta=40).with_yield(200)          # Bingham
+    newtonian(eta=40).with_yield(200).with_powerlaw(K=5, n=0.8)   # Herschel-Bulkley
+    granular(mu_s=0.38)                         # mu(I) sand (delta_mu=0 -> constant mu)
+    granular(mu_s=0.38, delta_mu=0.26, I0=0.3)  # Pouliquen mu(I)
+    granular(mu_s=0.38).with_dilatancy(phi_init=0.6, chi=0.2)     # compressible mu(I)-Phi(I)
+    elastic(E=1e5, nu=0.3)                       # Neo-Hookean-ish solid
+
+Materials are named for their PHYSICS (newtonian, granular, elastic), never for an
+application. Each `.with_*` returns a new frozen Material, so they compose freely. Not
+every combination is realized by the current fork; `.resolve()` validates and maps to the
+nearest fork material (newtonian=10, mu_i_sand=9, mu_i_phi=11, jelly=0).
+"""
+from __future__ import annotations
+
+import dataclasses
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Material:
+    base: str  # "newtonian" | "granular" | "elastic"
+    E: float = 1.0e5
+    nu: float = 0.3
+    density: float = 1000.0
+    bulk_modulus: float = 9.0e5
+    # generalized-Newtonian components (base="newtonian")
+    viscosity: float = 0.0       # eta  [Pa.s]
+    yield_stress: float = 0.0    # tau_y [Pa] (Bingham)
+    powerlaw_K: float = 0.0      # consistency (hardening)
+    powerlaw_n: float = 1.0      # exponent (softening); n<1 shear-thinning
+    # granular mu(I) components (base="granular")
+    mu_s: float = 0.0
+    delta_mu: float = 0.0
+    I0: float = 0.3
+    grain_diameter: float = 1.0e-3
+    grain_density: float = 2650.0
+    # dilatancy component (compressible mu(I)-Phi(I))
+    dilatant: bool = False
+    phi_init: float = 0.6
+    phi_chi: float = 0.2
+
+    # ---- composable modifiers (return a new Material) -------------------------------
+    def with_viscosity(self, eta: float) -> Material:
+        return dataclasses.replace(self, viscosity=eta)
+
+    def with_yield(self, tau_y: float) -> Material:
+        return dataclasses.replace(self, yield_stress=tau_y)
+
+    def with_powerlaw(self, K: float, n: float) -> Material:
+        return dataclasses.replace(self, powerlaw_K=K, powerlaw_n=n)
+
+    def with_friction(self, mu_s: float, delta_mu: float = 0.0, I0: float = 0.3) -> Material:
+        return dataclasses.replace(self, mu_s=mu_s, delta_mu=delta_mu, I0=I0)
+
+    def with_dilatancy(self, phi_init: float = 0.6, chi: float = 0.2) -> Material:
+        return dataclasses.replace(self, dilatant=True, phi_init=phi_init, phi_chi=chi)
+
+    def with_density(self, rho: float) -> Material:
+        return dataclasses.replace(self, density=rho)
+
+    # ---- map to the warp-mpm fork ---------------------------------------------------
+    def resolve(self) -> tuple[str, dict[str, float]]:
+        if self.base == "newtonian":
+            return "newtonian", dict(
+                E=self.E, nu=self.nu, density=self.density, bulk_modulus=self.bulk_modulus,
+                plastic_viscosity=self.viscosity, yield_stress=self.yield_stress,
+                hardening=self.powerlaw_K, softening=self.powerlaw_n,
+            )
+        if self.base == "granular":
+            params = dict(
+                E=self.E, nu=self.nu, density=self.density,
+                mu_s=self.mu_s, delta_mu=self.delta_mu, I0=self.I0,
+                grain_diameter=self.grain_diameter, grain_density=self.grain_density,
+            )
+            if self.dilatant:
+                params.update(phi_init=self.phi_init, phi_chi=self.phi_chi)
+                return "mu_i_phi", params
+            return "mu_i_sand", params
+        if self.base == "elastic":
+            return "jelly", dict(E=self.E, nu=self.nu, density=self.density)
+        raise ValueError(f"unknown material base {self.base!r}")
+
+
+def newtonian(eta: float = 0.0, density: float = 1000.0, bulk_modulus: float = 9.0e5,
+              E: float = 1.0e5, nu: float = 0.3) -> Material:
+    """Weakly-compressible generalized-Newtonian fluid (EOS + 2 eta dev D). Add .with_yield
+    for Bingham, .with_powerlaw for Herschel-Bulkley."""
+    return Material(base="newtonian", viscosity=eta, density=density,
+                    bulk_modulus=bulk_modulus, E=E, nu=nu)
+
+
+def granular(mu_s: float, delta_mu: float = 0.0, I0: float = 0.3, density: float = 1590.0,
+             grain_diameter: float = 1.0e-3, grain_density: float = 2650.0,
+             E: float = 1.0e6, nu: float = 0.3) -> Material:
+    """Local mu(I) granular rheology. delta_mu=0 -> constant friction. Add .with_dilatancy
+    for the compressible mu(I)-Phi(I) variant."""
+    return Material(base="granular", mu_s=mu_s, delta_mu=delta_mu, I0=I0, density=density,
+                    grain_diameter=grain_diameter, grain_density=grain_density, E=E, nu=nu)
+
+
+def elastic(E: float = 1.0e5, nu: float = 0.3, density: float = 1000.0) -> Material:
+    """Hyperelastic solid."""
+    return Material(base="elastic", E=E, nu=nu, density=density)
+
+
+__all__ = ["Material", "elastic", "granular", "newtonian"]
