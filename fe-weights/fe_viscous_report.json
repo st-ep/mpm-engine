@@ -1,0 +1,36 @@
+{
+  "K": 8,
+  "n_materials": 2500,
+  "steps": 6000,
+  "test_relL2_mean": 2.852107554805933e-06,
+  "test_relL2_worst": 0.00012029263897065646,
+  "gram_offdiag_max": 7.03016926995037e-05,
+  "per_family": {
+    "carreau": {
+      "n": 105,
+      "relL2_mean": 1.1669498271986759e-05,
+      "relL2_worst": 0.00012029263897065646
+    },
+    "bingham": {
+      "n": 87,
+      "relL2_mean": 4.191228032375467e-07,
+      "relL2_worst": 4.523737194101255e-07
+    },
+    "herschel": {
+      "n": 90,
+      "relL2_mean": 3.8973093341361326e-07,
+      "relL2_worst": 1.5724660175206333e-06
+    },
+    "newtonian": {
+      "n": 108,
+      "relL2_mean": 2.521956233044549e-07,
+      "relL2_worst": 2.521956233044583e-07
+    },
+    "powerlaw": {
+      "n": 110,
+      "relL2_mean": 9.270896694416718e-07,
+      "relL2_worst": 4.17932045150913e-06
+    }
+  },
+  "table_path": "out/function_encoder/fe_viscous_table.npz"
+}

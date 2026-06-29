@@ -1,0 +1,43 @@
+{
+  "K": 6,
+  "n_materials": 2400,
+  "test_relL2_mean": 9.842847651663934e-05,
+  "test_relL2_worst": 0.002745743254579771,
+  "history": [
+    {
+      "step": 0,
+      "test_relL2_mean": 0.0002261080093884707,
+      "test_relL2_worst": 0.00952390608629211
+    },
+    {
+      "step": 1000,
+      "test_relL2_mean": 0.00014721666717633028,
+      "test_relL2_worst": 0.007505676099298217
+    },
+    {
+      "step": 2000,
+      "test_relL2_mean": 0.00010151377619888598,
+      "test_relL2_worst": 0.004212425396275923
+    },
+    {
+      "step": 3000,
+      "test_relL2_mean": 0.00010033125336467589,
+      "test_relL2_worst": 0.005518276723331332
+    },
+    {
+      "step": 4000,
+      "test_relL2_mean": 9.95431828563463e-05,
+      "test_relL2_worst": 0.0060604149899392765
+    },
+    {
+      "step": 5000,
+      "test_relL2_mean": 9.874589249144779e-05,
+      "test_relL2_worst": 0.0060465557131130655
+    },
+    {
+      "step": 5999,
+      "test_relL2_mean": 9.842847651663931e-05,
+      "test_relL2_worst": 0.006005435148708469
+    }
+  ]
+}

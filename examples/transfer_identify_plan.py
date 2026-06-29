@@ -20,8 +20,10 @@ from pathlib import Path
 
 import numpy as np
 
-from examples.vonmises_identify import probe, identify
-from examples.shape_planning import PlateShapeScene, cem_plan, chamfer
+import sys  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `examples` importable when run as a script
+from examples.vonmises_identify import probe, identify  # noqa: E402
+from examples.shape_planning import PlateShapeScene, cem_plan, chamfer  # noqa: E402
 
 OUT = Path(__file__).resolve().parents[1] / "out" / "transfer_identify_plan"
 NU = 0.30

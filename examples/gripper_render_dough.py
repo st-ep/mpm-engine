@@ -13,7 +13,9 @@ from pathlib import Path
 
 import numpy as np
 
-from examples.gripper_shape import GripperShapeScene, ID_LAW, TRUE, OUT
+import sys  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `examples` importable when run as a script
+from examples.gripper_shape import GripperShapeScene, ID_LAW, TRUE, OUT  # noqa: E402
 
 
 def _poly(pts, h, sigma=1.3, iso_frac=0.30):
