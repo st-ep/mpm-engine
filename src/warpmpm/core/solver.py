@@ -1,8 +1,8 @@
-"""CPU-default Solver: a small typed wrapper over the warp-mpm fork.
+"""CUDA-default Solver: a small typed wrapper over the warp-mpm fork.
 
-Centralizes device handling (the fork hardcodes cuda in many signatures; on Apple
-Silicon we run CPU), Warp init, and the common load/material/collider/step/export calls,
-so scenes, tests, and the coupling backend never touch the raw fork or sys.path.
+Centralizes device handling, Warp init, and the common load/material/collider/step/export
+calls, so scenes, tests, and the coupling backend never touch the raw fork or sys.path.
+Pass ``device="cuda:1"`` to run on the second GPU or ``device="cpu"`` for a CPU fallback.
 """
 from __future__ import annotations
 
@@ -38,10 +38,10 @@ class GridConfig:
 
 @dataclass
 class Solver:
-    """Thin owner of one MPM_Simulator_WARP instance, CPU by default."""
+    """Thin owner of one MPM_Simulator_WARP instance, CUDA by default."""
 
     grid: GridConfig = field(default_factory=GridConfig)
-    device: str = "cpu"
+    device: str = "cuda:0"
     _sim: Any = field(default=None, init=False, repr=False)
     _step: int = field(default=0, init=False, repr=False)
     _vol0: Any = field(default=None, init=False, repr=False)
