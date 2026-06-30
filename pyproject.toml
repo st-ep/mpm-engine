@@ -5,7 +5,7 @@ description = "Fast, modular Warp-MPM engine for robot manipulation of deformabl
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "warp-lang>=1.10.1",
-    "torch>=2.4",
+    "torch==2.8.0",
     "numpy>=1.26",
 ]
 
