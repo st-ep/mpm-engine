@@ -138,21 +138,6 @@ class MPM_Simulator_WARP:
 
         self.mpm_model.grid_v_damping_scale = 1.1  # globally applied
 
-        # fluid density-consistency correction (volume fix): OFF by default; enable
-        # per scene via set_parameters_dict("density_correction", alpha) for fluids.
-        # max_j = 1.0 means the correction NEVER creates tension (no visible
-        # self-attraction): it only erases the spurious compressive memory that would
-        # resist gravity re-packing a loose (aerated) bed, and relieves over-packing.
-        self.mpm_model.density_corr_alpha = 0.0
-        self.mpm_model.density_corr_gate = 0.35
-        self.mpm_model.density_corr_min_j = 0.95
-        self.mpm_model.density_corr_max_j = 1.0
-        # with max_j = 1 the correction is force-free for unstressed material, so the
-        # velocity gate can be wide: consolidation happens DURING the slow crunch of a
-        # collapsing loose bed (erasing springback as it forms), while fast impacts
-        # (> vmax) keep their real elastic rebound
-        self.mpm_model.density_corr_vmax = 0.7
-
         self.mpm_state = MPMStateStruct()
 
         self.mpm_state.particle_x = wp.empty(
@@ -235,11 +220,6 @@ class MPM_Simulator_WARP:
         self.mpm_state.grid_v_out = wp.zeros(
             shape=(self.mpm_model.n_grid, self.mpm_model.n_grid, self.mpm_model.n_grid),
             dtype=wp.vec3,
-            device=device,
-        )
-        self.mpm_state.grid_solid = wp.zeros(
-            shape=(self.mpm_model.n_grid, self.mpm_model.n_grid, self.mpm_model.n_grid),
-            dtype=int,
             device=device,
         )
 
@@ -424,11 +404,6 @@ class MPM_Simulator_WARP:
             dtype=wp.vec3,
             device=device,
         )
-        self.mpm_state.grid_solid = wp.zeros(
-            shape=(self.mpm_model.n_grid, self.mpm_model.n_grid, self.mpm_model.n_grid),
-            dtype=int,
-            device=device,
-        )
 
         mat_id = self.mpm_model.material  # current material type for per-type indexing
 
@@ -532,18 +507,6 @@ class MPM_Simulator_WARP:
             self.mpm_model.rpic_damping = kwargs["rpic_damping"]
         if "grid_v_damping_scale" in kwargs:
             self.mpm_model.grid_v_damping_scale = kwargs["grid_v_damping_scale"]
-
-        # fluid density-consistency correction (volume fix), materials 6/10/12 only
-        if "density_correction" in kwargs:
-            self.mpm_model.density_corr_alpha = float(kwargs["density_correction"])
-        if "density_correction_gate" in kwargs:
-            self.mpm_model.density_corr_gate = float(kwargs["density_correction_gate"])
-        if "density_correction_min_j" in kwargs:
-            self.mpm_model.density_corr_min_j = float(kwargs["density_correction_min_j"])
-        if "density_correction_max_j" in kwargs:
-            self.mpm_model.density_corr_max_j = float(kwargs["density_correction_max_j"])
-        if "density_correction_vmax" in kwargs:
-            self.mpm_model.density_corr_vmax = float(kwargs["density_correction_vmax"])
 
         if "additional_material_params" in kwargs:
             for params in kwargs["additional_material_params"]:
@@ -841,19 +804,6 @@ class MPM_Simulator_WARP:
                 )
                 if self.modify_bc[k] is not None:
                     self.modify_bc[k](self.time, dt, self.collider_params[k])
-
-        # fluid density-consistency correction: runs after the BC pass so grid_solid is
-        # fresh (collider-covered nodes are excluded from the density measurement) and
-        # grid_m is complete from p2g. Blends fluid particles' remembered J toward the
-        # measured grid density so loose (aerated) beds re-pack -- see
-        # fluid_density_correction. No-op when alpha = 0 (the default).
-        if self.mpm_model.density_corr_alpha > 0.0:
-            wp.launch(
-                kernel=fluid_density_correction,
-                dim=self.n_particles,
-                inputs=[self.mpm_state, self.mpm_model],
-                device=device,
-            )
 
         # g2p
         with wp.ScopedTimer(
@@ -1201,7 +1151,6 @@ class MPM_Simulator_WARP:
                 dotproduct = wp.dot(offset, n)
 
                 if dotproduct < 0.0:
-                    state.grid_solid[grid_x, grid_y, grid_z] = 1
                     if param.surface_type == 0:
                         state.grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
                             0.0, 0.0, 0.0
@@ -1301,7 +1250,6 @@ class MPM_Simulator_WARP:
                     v_free = state.grid_v_out[grid_x, grid_y, grid_z]
                     wp.atomic_add(param.force, 0, m * (v_free - param.velocity))
                     state.grid_v_out[grid_x, grid_y, grid_z] = param.velocity
-                    state.grid_solid[grid_x, grid_y, grid_z] = 1
             elif param.reset == 1:
                 if time < param.end_time + 15.0 * dt:
                     state.grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(0.0, 0.0, 0.0)
@@ -1389,7 +1337,6 @@ class MPM_Simulator_WARP:
                 local = wp.transpose(param.rot) * rel
                 sdf = revolved_glass_sdf(local, param)
                 if sdf < param.contact_band:
-                    state.grid_solid[grid_x, grid_y, grid_z] = 1
                     v_solid = param.velocity + wp.cross(param.omega, rel)
                     v_in = state.grid_v_out[grid_x, grid_y, grid_z]
                     v_new = v_solid  # deep interior default: full grab (anti-tunneling)
@@ -1762,7 +1709,6 @@ class MPM_Simulator_WARP:
             if time >= param.start_time and time < param.end_time:
                 if param.occupancy_grid[grid_x, grid_y, grid_z] == 1:
                     state.grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(0.0, 0.0, 0.0)
-                    state.grid_solid[grid_x, grid_y, grid_z] = 1
 
         self.grid_postprocess.append(collide)
         self.modify_bc.append(None)

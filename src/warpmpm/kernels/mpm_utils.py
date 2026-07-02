@@ -649,7 +649,6 @@ def zero_grid(state: MPMStateStruct, model: MPMModelStruct):
     state.grid_m[grid_x, grid_y, grid_z] = 0.0
     state.grid_v_in[grid_x, grid_y, grid_z] = wp.vec3(0.0, 0.0, 0.0)
     state.grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(0.0, 0.0, 0.0)
-    state.grid_solid[grid_x, grid_y, grid_z] = 0
 
 
 @wp.func
@@ -922,89 +921,6 @@ def compute_stress_from_F_trial(
 
         stress = (stress + wp.transpose(stress)) / 2.0  # enfore symmetry
         state.particle_stress[p] = stress
-
-
-# fluid density-consistency correction (volume fix). Runs AFTER p2g (grid_m complete),
-# for fluid materials (6/10/12) only. Gathers the MEASURED density rho_hat around each
-# particle from the grid mass with the same quadratic B-spline weights, and blends the
-# particle's remembered volume ratio J = det(F) TWO-SIDEDLY toward J_meas = rho0/rho_hat
-# (one-sided blending is a ratchet that erases compressive memory and over-compacts).
-# Gated to bulk (rho_hat > gate*rho0: free surfaces / ballistic droplets are legitimate
-# low-density geometry) and to near-settled material (|v| < vmax: the flying stream and
-# active splash keep untouched dynamics); the target is clamped to [min_j, max_j] --
-# with max_j = 1.0 the correction never creates tension (no visible self-attraction),
-# it only erases the spurious compressive resistance so gravity can re-pack the bed.
-# A settled 8-ppc lattice measures its own true density, so the blend is a no-op at
-# rest. See MPMModelStruct.
-@wp.kernel
-def fluid_density_correction(state: MPMStateStruct, model: MPMModelStruct):
-    p = wp.tid()
-    if state.particle_selection[p] == 0:
-        mat = state.particle_material[p]
-        if mat == 6 or mat == 10 or mat == 12:
-            v_p = state.particle_v[p]
-            if wp.length(v_p) < model.density_corr_vmax:
-                grid_pos = state.particle_x[p] * model.inv_dx
-                base_pos_x = wp.int(grid_pos[0] - 0.5)
-                base_pos_y = wp.int(grid_pos[1] - 0.5)
-                base_pos_z = wp.int(grid_pos[2] - 0.5)
-                fx = grid_pos - wp.vec3(
-                    wp.float(base_pos_x), wp.float(base_pos_y), wp.float(base_pos_z)
-                )
-                wa = wp.vec3(1.5) - fx
-                wb = fx - wp.vec3(1.0)
-                wc = fx - wp.vec3(0.5)
-                w = wp.matrix_from_cols(
-                    wp.cw_mul(wa, wa) * 0.5,
-                    wp.vec3(0.0, 0.0, 0.0) - wp.cw_mul(wb, wb) + wp.vec3(0.75),
-                    wp.cw_mul(wc, wc) * 0.5,
-                )
-                rho0 = state.particle_density[p]
-                # Shepard-normalized density: gather node mass, but normalize by the
-                # B-spline weight of OCCUPIED FREE nodes only. A clean free surface
-                # (empty nodes above) then measures ~rho0 -- no spurious tension film on
-                # the skin -- and collider-covered nodes (grid_solid) are excluded
-                # entirely, so wall-interior spline tails cannot bias the measurement
-                # low (a suction film that pulled boundary layers into the wall). A
-                # numerically aerated bed still reads loose, because every node in it
-                # carries scattered mass and stays in the denominator.
-                m_eps = 1.0e-6 * rho0 * model.dx * model.dx * model.dx
-                m_gather = float(0.0)
-                w_occ = float(0.0)
-                for i in range(0, 3):
-                    for j in range(0, 3):
-                        for k in range(0, 3):
-                            weight = w[0, i] * w[1, j] * w[2, k]
-                            ix = base_pos_x + i
-                            iy = base_pos_y + j
-                            iz = base_pos_z + k
-                            if state.grid_solid[ix, iy, iz] == 0:
-                                m_node = state.grid_m[ix, iy, iz]
-                                m_gather = m_gather + weight * m_node
-                                if m_node > m_eps:
-                                    w_occ = w_occ + weight
-                rho_hat = float(0.0)
-                if w_occ > 1.0e-6:
-                    rho_hat = m_gather * model.inv_dx * model.inv_dx * model.inv_dx / w_occ
-                if rho_hat > model.density_corr_gate * rho0:
-                    j_cur = wp.determinant(state.particle_F[p])
-                    j_meas = rho0 / rho_hat
-                    # deficit-ramped rate: boundary-row liquid legitimately measures a
-                    # mild deficit (J_meas ~ 1.1-1.2, half its node support is wall or
-                    # surface) -- correcting there would perpetually erase real
-                    # hydrostatic compression (a churn that biases the cup wrench).
-                    # True aeration measures J_meas ~ 1.5-2.5. Ramp the blend from zero
-                    # below 15% deficit to full strength at 50%, so only unambiguous
-                    # looseness is repaired at full rate.
-                    ramp = wp.clamp((wp.abs(j_meas - 1.0) - 0.15) / 0.35, 0.0, 1.0)
-                    j_target = wp.clamp(
-                        j_meas, model.density_corr_min_j, model.density_corr_max_j
-                    )
-                    j_new = j_cur + model.density_corr_alpha * ramp * (j_target - j_cur)
-                    c = wp.pow(j_new, 1.0 / 3.0)
-                    state.particle_F[p] = wp.mat33(
-                        c, 0.0, 0.0, 0.0, c, 0.0, 0.0, 0.0, c
-                    )
 
 
 @wp.kernel
