@@ -54,6 +54,30 @@ class MPMModelStruct:
     eta_table_smax: float
     eta_table_n: int
 
+    ####### fluid density-consistency correction (materials 6/10/12; volume fix) ####
+    # The weakly-compressible fluid's pressure is a function of the REMEMBERED volume
+    # ratio J = det(F); at stream breakup, droplets separate through empty cells where
+    # divergence is never sampled, so material can land as a loose bed (grid density
+    # << rho0) whose particles still believe J ~ 1 -- persistent numerical AERATION.
+    # This correction blends J TWO-SIDEDLY toward the MEASURED rho0/rho_hat (rho_hat
+    # gathered from grid mass), i.e. it enforces consistency between the Lagrangian
+    # and the Eulerian density ledgers (a one-sided blend is a RATCHET: it erases
+    # compressive J memory at rest and over-compacts). Gates keep it out of places
+    # where a low rho_hat is legitimate geometry rather than error: only BULK material
+    # (rho_hat > gate*rho0) and only NEAR-SETTLED material (|v_p| < vmax; the flying
+    # stream and active splash keep their untouched dynamics). The blend target is
+    # clamped to [min_j, max_j]; with max_j = 1.0 (the default) the correction NEVER
+    # creates tension -- a loose bed is not pulled together (visible as liquid sucking
+    # into itself), it merely stops resisting the gravity that re-packs it, while
+    # over-packed regions are still relieved via min_j. At a true hydrostatic rest
+    # state rho_hat measures the real compressed density, so the blend is a no-op
+    # there. alpha = 0 disables (the default).
+    density_corr_alpha: float   # per-substep blend rate toward the measured J
+    density_corr_gate: float    # bulk gate: apply only where rho_hat > gate * rho0
+    density_corr_min_j: float   # clamp on the blend target J (compression side)
+    density_corr_max_j: float   # clamp on the blend target J (expansion side)
+    density_corr_vmax: float    # apply only to near-settled particles (|v| < vmax)
+
     ####### for damping
     rpic_damping: float
     grid_v_damping_scale: float
@@ -95,6 +119,10 @@ class MPMStateStruct:
     grid_v_out: wp.array(
         dtype=wp.vec3, ndim=3
     )  # grid node momentum/velocity, after grid update
+    grid_solid: wp.array(dtype=int, ndim=3)  # 1 where a collider BC covers the node this
+    # substep (written by the collider kernels); lets the fluid density correction ignore
+    # wall-interior nodes, whose B-spline mass tails would otherwise bias the measured
+    # density low near walls (a spurious suction film)
 
 
 # for various boundary conditions
@@ -140,6 +168,32 @@ class PointCloudCollider:
     occupancy_grid: wp.array(dtype=int, ndim=3)
     start_time: float
     end_time: float
+
+
+# kinematic open-top glass (solid of revolution) driven by the robot end-effector:
+# 6-DoF pose + rigid velocity field, analytic profile scalars, and the Newton-exact
+# reaction impulse/torque accumulators (see add_revolved_sdf_collider)
+@wp.struct
+class RevolvedCollider:
+    point: wp.vec3          # glass centre (mid-height), world frame
+    rot: wp.mat33           # local -> world rotation
+    velocity: wp.vec3       # linear velocity of the centre
+    omega: wp.vec3          # angular velocity, world frame
+
+    start_time: float
+    end_time: float
+    friction: float         # Coulomb friction of the near-surface separable contact
+
+    outer_radius: float
+    inner_radius: float
+    half_height: float
+    inner_floor_z: float    # local z of the cavity floor
+    fillet_radius: float    # cavity floor-edge fillet
+    sticky_depth: float     # deeper than this inside the solid: full velocity grab
+    contact_band: float     # BC also acts this far OUTSIDE the surface (approach-only)
+
+    force: wp.array(dtype=wp.vec3)   # sum_substeps sum_nodes m*(v_free - v_imposed)
+    torque: wp.array(dtype=wp.vec3)  # sum of (x_node - point) x impulse
 
 
 

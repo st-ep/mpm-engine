@@ -15,6 +15,41 @@ MATERIAL_NAME_TO_ID = {
 MAX_MATERIALS = 16
 
 
+# ---------------------------------------------------------------------------
+# Analytic revolved-SDF glass (open-top cup) for the kinematic cup collider
+# ---------------------------------------------------------------------------
+
+@wp.func
+def capped_cylinder_sdf(r_xy: float, z: float, radius: float, z0: float, z1: float) -> float:
+    # exact SDF of the solid cylinder r <= radius, z in [z0, z1]
+    zc = 0.5 * (z0 + z1)
+    hh = 0.5 * (z1 - z0)
+    dr = r_xy - radius
+    dz = wp.abs(z - zc) - hh
+    dr_out = wp.max(dr, 0.0)
+    dz_out = wp.max(dz, 0.0)
+    outside = wp.sqrt(dr_out * dr_out + dz_out * dz_out)
+    inside = wp.min(wp.max(dr, dz), 0.0)
+    return outside + inside
+
+
+@wp.func
+def revolved_glass_sdf(local: wp.vec3, param: RevolvedCollider) -> float:
+    # open-top glass SOLID = outer capped cylinder MINUS the fillet-dilated cavity
+    # cylinder (cavity extended above the rim so the top is open). Twin of the numpy
+    # reference in colliders/glass.py:glass_sdf_local -- keep the two in lockstep.
+    r_xy = wp.sqrt(local[0] * local[0] + local[1] * local[1])
+    d_outer = capped_cylinder_sdf(
+        r_xy, local[2], param.outer_radius, -param.half_height, param.half_height
+    )
+    d_cavity = capped_cylinder_sdf(
+        r_xy, local[2], param.inner_radius - param.fillet_radius,
+        param.inner_floor_z + param.fillet_radius,
+        param.half_height + param.outer_radius,
+    ) - param.fillet_radius
+    return wp.max(d_outer, -d_cavity)
+
+
 class MPM_Simulator_WARP:
     def __init__(self, n_particles, n_grid=100, grid_lim=1.0, device="cuda:0"):
         self.initialize(n_particles, n_grid, grid_lim, device=device)
@@ -103,6 +138,21 @@ class MPM_Simulator_WARP:
 
         self.mpm_model.grid_v_damping_scale = 1.1  # globally applied
 
+        # fluid density-consistency correction (volume fix): OFF by default; enable
+        # per scene via set_parameters_dict("density_correction", alpha) for fluids.
+        # max_j = 1.0 means the correction NEVER creates tension (no visible
+        # self-attraction): it only erases the spurious compressive memory that would
+        # resist gravity re-packing a loose (aerated) bed, and relieves over-packing.
+        self.mpm_model.density_corr_alpha = 0.0
+        self.mpm_model.density_corr_gate = 0.35
+        self.mpm_model.density_corr_min_j = 0.95
+        self.mpm_model.density_corr_max_j = 1.0
+        # with max_j = 1 the correction is force-free for unstressed material, so the
+        # velocity gate can be wide: consolidation happens DURING the slow crunch of a
+        # collapsing loose bed (erasing springback as it forms), while fast impacts
+        # (> vmax) keep their real elastic rebound
+        self.mpm_model.density_corr_vmax = 0.7
+
         self.mpm_state = MPMStateStruct()
 
         self.mpm_state.particle_x = wp.empty(
@@ -187,12 +237,18 @@ class MPM_Simulator_WARP:
             dtype=wp.vec3,
             device=device,
         )
+        self.mpm_state.grid_solid = wp.zeros(
+            shape=(self.mpm_model.n_grid, self.mpm_model.n_grid, self.mpm_model.n_grid),
+            dtype=int,
+            device=device,
+        )
 
         self.time = 0.0
 
         self.grid_postprocess = []
         self.collider_params = []
         self.modify_bc = []
+        self._revolved_rot = {}  # host-side float64 rotation shadow per revolved collider
 
         self.tailored_struct_for_bc = MPMtailoredStruct()
         self.pre_p2g_operations = []
@@ -368,6 +424,11 @@ class MPM_Simulator_WARP:
             dtype=wp.vec3,
             device=device,
         )
+        self.mpm_state.grid_solid = wp.zeros(
+            shape=(self.mpm_model.n_grid, self.mpm_model.n_grid, self.mpm_model.n_grid),
+            dtype=int,
+            device=device,
+        )
 
         mat_id = self.mpm_model.material  # current material type for per-type indexing
 
@@ -471,6 +532,18 @@ class MPM_Simulator_WARP:
             self.mpm_model.rpic_damping = kwargs["rpic_damping"]
         if "grid_v_damping_scale" in kwargs:
             self.mpm_model.grid_v_damping_scale = kwargs["grid_v_damping_scale"]
+
+        # fluid density-consistency correction (volume fix), materials 6/10/12 only
+        if "density_correction" in kwargs:
+            self.mpm_model.density_corr_alpha = float(kwargs["density_correction"])
+        if "density_correction_gate" in kwargs:
+            self.mpm_model.density_corr_gate = float(kwargs["density_correction_gate"])
+        if "density_correction_min_j" in kwargs:
+            self.mpm_model.density_corr_min_j = float(kwargs["density_correction_min_j"])
+        if "density_correction_max_j" in kwargs:
+            self.mpm_model.density_corr_max_j = float(kwargs["density_correction_max_j"])
+        if "density_correction_vmax" in kwargs:
+            self.mpm_model.density_corr_vmax = float(kwargs["density_correction_vmax"])
 
         if "additional_material_params" in kwargs:
             for params in kwargs["additional_material_params"]:
@@ -768,6 +841,19 @@ class MPM_Simulator_WARP:
                 )
                 if self.modify_bc[k] is not None:
                     self.modify_bc[k](self.time, dt, self.collider_params[k])
+
+        # fluid density-consistency correction: runs after the BC pass so grid_solid is
+        # fresh (collider-covered nodes are excluded from the density measurement) and
+        # grid_m is complete from p2g. Blends fluid particles' remembered J toward the
+        # measured grid density so loose (aerated) beds re-pack -- see
+        # fluid_density_correction. No-op when alpha = 0 (the default).
+        if self.mpm_model.density_corr_alpha > 0.0:
+            wp.launch(
+                kernel=fluid_density_correction,
+                dim=self.n_particles,
+                inputs=[self.mpm_state, self.mpm_model],
+                device=device,
+            )
 
         # g2p
         with wp.ScopedTimer(
@@ -1115,6 +1201,7 @@ class MPM_Simulator_WARP:
                 dotproduct = wp.dot(offset, n)
 
                 if dotproduct < 0.0:
+                    state.grid_solid[grid_x, grid_y, grid_z] = 1
                     if param.surface_type == 0:
                         state.grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
                             0.0, 0.0, 0.0
@@ -1214,6 +1301,7 @@ class MPM_Simulator_WARP:
                     v_free = state.grid_v_out[grid_x, grid_y, grid_z]
                     wp.atomic_add(param.force, 0, m * (v_free - param.velocity))
                     state.grid_v_out[grid_x, grid_y, grid_z] = param.velocity
+                    state.grid_solid[grid_x, grid_y, grid_z] = 1
             elif param.reset == 1:
                 if time < param.end_time + 15.0 * dt:
                     state.grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(0.0, 0.0, 0.0)
@@ -1228,6 +1316,166 @@ class MPM_Simulator_WARP:
 
         self.grid_postprocess.append(collide)
         self.modify_bc.append(modify)
+
+    # A kinematic open-top glass (solid of revolution: outer capped cylinder minus a
+    # fillet-dilated cavity) at a 6-DoF pose (point, rot), imposing its rigid velocity
+    # field v + omega x r on the grid nodes inside the solid. Within sticky_depth of the
+    # surface the BC is a SEPARABLE Coulomb-friction contact on the RELATIVE velocity
+    # (liquid may slide along and detach from the wall -- essential for pouring); deeper
+    # nodes get the full solid velocity, an anti-tunneling backstop no resolved flow
+    # should reach (the wall is >= 3 cells thick at the intended resolutions). Every
+    # substep the kernel accumulates the exact reaction impulse m*(v_free - v_imposed)
+    # AND its torque about `point` BEFORE overwriting the node, so wrench = impulse/dt
+    # is the Newton-exact wrench the material exerts on the glass. modify_bc advances
+    # point += dt*v and rot <- exp(dt*skew(omega)) rot each substep, so over one control
+    # tick the glass sweeps start-of-tick pose -> commanded target (the set_box
+    # contract, extended to rotation).
+    def add_revolved_sdf_collider(
+        self,
+        point,
+        rot,
+        velocity=(0.0, 0.0, 0.0),
+        omega=(0.0, 0.0, 0.0),
+        outer_radius=0.089,
+        inner_radius=0.069,
+        half_height=0.12,
+        inner_floor_z=-0.07,
+        fillet_radius=0.012,
+        friction=0.0,
+        sticky_depth=0.0,
+        contact_band=0.0,
+        start_time=0.0,
+        end_time=999.0,
+    ):
+        param = RevolvedCollider()
+        param.point = wp.vec3(float(point[0]), float(point[1]), float(point[2]))
+        rot_np = np.asarray(rot, dtype=np.float64).reshape(3, 3)
+        param.rot = wp.mat33(*rot_np.astype(np.float32).ravel().tolist())
+        param.velocity = wp.vec3(float(velocity[0]), float(velocity[1]), float(velocity[2]))
+        param.omega = wp.vec3(float(omega[0]), float(omega[1]), float(omega[2]))
+        param.start_time = start_time
+        param.end_time = end_time
+        param.friction = friction
+        param.outer_radius = outer_radius
+        param.inner_radius = inner_radius
+        param.half_height = half_height
+        param.inner_floor_z = inner_floor_z
+        param.fillet_radius = fillet_radius
+        param.sticky_depth = sticky_depth
+        param.contact_band = contact_band
+        dvc = self.mpm_state.grid_m.device
+        param.force = wp.zeros(1, dtype=wp.vec3, device=dvc)
+        param.torque = wp.zeros(1, dtype=wp.vec3, device=dvc)
+        idx = len(self.collider_params)
+        self.collider_params.append(param)
+        self._revolved_rot[idx] = rot_np.copy()
+
+        @wp.kernel
+        def collide(
+            time: float,
+            dt: float,
+            state: MPMStateStruct,
+            model: MPMModelStruct,
+            param: RevolvedCollider,
+        ):
+            grid_x, grid_y, grid_z = wp.tid()
+            if time >= param.start_time and time < param.end_time:
+                x_node = wp.vec3(
+                    float(grid_x) * model.dx,
+                    float(grid_y) * model.dx,
+                    float(grid_z) * model.dx,
+                )
+                rel = x_node - param.point
+                local = wp.transpose(param.rot) * rel
+                sdf = revolved_glass_sdf(local, param)
+                if sdf < param.contact_band:
+                    state.grid_solid[grid_x, grid_y, grid_z] = 1
+                    v_solid = param.velocity + wp.cross(param.omega, rel)
+                    v_in = state.grid_v_out[grid_x, grid_y, grid_z]
+                    v_new = v_solid  # deep interior default: full grab (anti-tunneling)
+                    if sdf > -param.sticky_depth:
+                        # near-surface shell AND the outside contact band: separable
+                        # contact with Coulomb friction on the relative velocity. Acting
+                        # contact_band OUTSIDE the surface stops approaching material
+                        # BEFORE it can creep into the solid (leak prevention); separating
+                        # or sliding material is left free. SDF normal by central
+                        # differences in the local frame (analytic profile -> smooth).
+                        v_new = v_in
+                        h = 0.25 * model.dx
+                        n_local = wp.vec3(
+                            revolved_glass_sdf(local + wp.vec3(h, 0.0, 0.0), param)
+                            - revolved_glass_sdf(local - wp.vec3(h, 0.0, 0.0), param),
+                            revolved_glass_sdf(local + wp.vec3(0.0, h, 0.0), param)
+                            - revolved_glass_sdf(local - wp.vec3(0.0, h, 0.0), param),
+                            revolved_glass_sdf(local + wp.vec3(0.0, 0.0, h), param)
+                            - revolved_glass_sdf(local - wp.vec3(0.0, 0.0, h), param),
+                        )
+                        n_len = wp.length(n_local)
+                        if n_len > 1.0e-12:
+                            n = param.rot * (n_local / n_len)
+                            v_rel = v_in - v_solid
+                            vn = wp.dot(v_rel, n)
+                            if vn < 0.0:
+                                # approaching: kill the normal part, Coulomb-cut the rest
+                                v_t = v_rel - vn * n
+                                vt_len = wp.length(v_t)
+                                if vt_len > 1.0e-20:
+                                    v_t = wp.max(vt_len + param.friction * vn, 0.0) * (
+                                        v_t / vt_len
+                                    )
+                                v_new = v_solid + v_t
+                    imp = state.grid_m[grid_x, grid_y, grid_z] * (v_in - v_new)
+                    wp.atomic_add(param.force, 0, imp)
+                    wp.atomic_add(param.torque, 0, wp.cross(rel, imp))
+                    state.grid_v_out[grid_x, grid_y, grid_z] = v_new
+
+        def modify(time, dt, param: RevolvedCollider):
+            if time >= param.start_time and time < param.end_time:
+                param.point = wp.vec3(
+                    param.point[0] + dt * param.velocity[0],
+                    param.point[1] + dt * param.velocity[1],
+                    param.point[2] + dt * param.velocity[2],
+                )
+                w = np.array(
+                    [param.omega[0], param.omega[1], param.omega[2]], dtype=np.float64
+                )
+                w_norm = float(np.linalg.norm(w))
+                ang = w_norm * dt
+                if ang > 1.0e-12:
+                    # exact Rodrigues increment on the float64 shadow (the fp32 struct
+                    # copy is refreshed from it, so orthonormality never drifts)
+                    axis = w / w_norm
+                    kx = np.array(
+                        [
+                            [0.0, -axis[2], axis[1]],
+                            [axis[2], 0.0, -axis[0]],
+                            [-axis[1], axis[0], 0.0],
+                        ]
+                    )
+                    rot_inc = np.eye(3) + np.sin(ang) * kx + (1.0 - np.cos(ang)) * (kx @ kx)
+                    self._revolved_rot[idx] = rot_inc @ self._revolved_rot[idx]
+                    param.rot = wp.mat33(
+                        *self._revolved_rot[idx].astype(np.float32).ravel().tolist()
+                    )
+
+        self.grid_postprocess.append(collide)
+        self.modify_bc.append(modify)
+        return idx
+
+    def set_revolved_collider_pose(self, idx, point=None, rot=None, velocity=None, omega=None):
+        """Drive a revolved collider with its START-of-tick pose and per-tick velocities
+        (modify_bc integrates pose -> pose + dt_ctrl*(v, omega) over the substeps)."""
+        param = self.collider_params[idx]
+        if point is not None:
+            param.point = wp.vec3(float(point[0]), float(point[1]), float(point[2]))
+        if rot is not None:
+            rot_np = np.asarray(rot, dtype=np.float64).reshape(3, 3)
+            self._revolved_rot[idx] = rot_np.copy()
+            param.rot = wp.mat33(*rot_np.astype(np.float32).ravel().tolist())
+        if velocity is not None:
+            param.velocity = wp.vec3(float(velocity[0]), float(velocity[1]), float(velocity[2]))
+        if omega is not None:
+            param.omega = wp.vec3(float(omega[0]), float(omega[1]), float(omega[2]))
 
     def add_bounding_box(self, start_time=0.0, end_time=999.0):
         collider_param = Dirichlet_collider()
@@ -1514,6 +1762,7 @@ class MPM_Simulator_WARP:
             if time >= param.start_time and time < param.end_time:
                 if param.occupancy_grid[grid_x, grid_y, grid_z] == 1:
                     state.grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(0.0, 0.0, 0.0)
+                    state.grid_solid[grid_x, grid_y, grid_z] = 1
 
         self.grid_postprocess.append(collide)
         self.modify_bc.append(None)

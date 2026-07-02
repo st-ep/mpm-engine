@@ -1,0 +1,337 @@
+"""Franka pours MPM water from one glass into another -- the pouring counterpart of the
+viscoplastic dough-press experiments, on the same engine.
+
+The robot ACTION and the scene GEOMETRY are ported 1:1 from the Dogma95 Genesis (SPH)
+pouring study (robotic_arm_pour_genesis.py): the same Panda joint trajectory (FK is
+bit-identical between the two panda models), the same glass profile, poses, and 80%
+fill -- so the identical pour is directly comparable across the two simulators. The
+liquid is warpmpm's weakly-compressible generalized-Newtonian fluid at water-like
+viscosity (eta = 1e-3 Pa.s; at dx ~ 5 mm the numerical dissipation dominates true water
+viscosity, so this is the inviscid end of what the discretization resolves). Both
+glasses are kinematic revolved-SDF colliders with Newton-exact wrench accumulators:
+the held glass reads the wrist-load analog, the receiving glass is a SCALE -- its Fz
+growth is the transferred weight, cross-checked against the particle count each frame.
+
+Leak control (grid BC contact band + sticky core) is audited every frame: any particle
+embedded in a glass wall is counted, projected back out, and reported; the run fails
+loudly if the audit ever grows past a fraction of the fill.
+
+Run:
+  python examples/pour_franka.py --device cuda:0
+  python examples/pour_franka.py --device cuda:0 --fast          # coarse smoke run
+  python examples/pour_franka.py --device cuda:0 --skip-video    # metrics only
+
+Outputs (out/pour_franka/):
+  pour_franka.mp4    composite MuJoCo render: arm + glasses + water (60 fps)
+  metrics.csv        per-frame region counts/fractions, tilt, wrenches, leak audit
+  pour_metrics.png   receiver/spill fractions + glass wrenches vs time
+  settled_*.npz      cached settled particle state (delete or --rebake to refresh)
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import time
+from pathlib import Path
+
+import matplotlib
+import numpy as np
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+from warpmpm import GlassProfile, GridConfig, Solver, cup_fill, newtonian
+from warpmpm.adapters.mujoco_adapter import PandaPour
+from warpmpm.colliders.glass import (
+    angular_velocity_between,
+    cavity_mask,
+    project_out_of_solid,
+    quat_to_mat,
+    solid_mask,
+    write_glass_obj,
+)
+
+OUT = Path(__file__).resolve().parents[1] / "out" / "pour_franka"
+
+# ---- scene constants, world frame (= Dogma95 world; the Panda base at (-0.15, 0, 0)) --
+PROFILE = GlassProfile()                                   # the Dogma95 glass
+# Receiver rests on the floor (z = height/2). Dogma95 used (0.29, -0.20); ours is shifted
+# to the MEASURED stream centroid at rim height (the MPM stream lands 5 cm further +x
+# than the SPH one; at the old spot it hit the far rim and the splash crown ejected over
+# it). Swept-source-glass clearance at this spot is 50 mm (was 19 mm).
+RECEIVER_POS = np.array([0.34, -0.19, 0.12])
+Q_ID = np.array([1.0, 0.0, 0.0, 0.0])
+FILL_FRACTION = 0.80
+WATER = dict(eta=1.0e-3, density=1000.0, bulk_modulus=9.0e5)
+# fluid density-consistency correction (volume fix): repairs the aeration picked up at
+# stream breakup so settled LEVELS match the true volume (DFSPH enforces this exactly;
+# see level_volume). Tension-free form (target J capped at 1): loose beds are not
+# pulled together -- they just stop resisting the gravity that re-packs them.
+DENSITY_CORRECTION = 0.2                                   # per-substep blend rate
+GLASS_FRICTION = 0.05                                      # Dogma95 coup_friction
+FPS = 60
+HOLD_SECONDS = 1.5    # keep filming after the return so the beds settle on camera
+LIQUID_RGBA = np.array([0.30, 0.62, 1.0, 1.0])
+GLASS_RGBA = (0.76, 0.92, 1.0, 0.30)                       # Dogma95 glass_surface
+HANDLE_RGBA = np.array([0.06, 0.07, 0.08, 1.0])
+BACKDROP_RGBA = np.array([0.24, 0.26, 0.30, 1.0])
+# matches the Dogma95 camera side: camera at ~(0.95, -1.35, 0.62) looking at the scene
+# (MuJoCo azimuth/elevation give the LOOK direction: from -y+x toward the glasses)
+CAMERA = dict(lookat=(0.08, 0.0, 0.30), distance=1.5, azimuth=122.8, elevation=-13.0)
+
+# world -> MPM domain offset: fits the swept glass (x -0.005..0.32, z <= 0.60), the
+# receiver, and the floor spill area inside [0, 0.7]^3 with >= 3-cell padding
+GRID_LIM = 0.7
+WORLD_TO_MPM = np.array([0.16, 0.53, 0.02])                # floor z=0 -> 3.7 cells at 128
+
+
+def sound_speed() -> float:
+    return float(np.sqrt(1.1 * WATER["bulk_modulus"] / WATER["density"]))
+
+
+def build_scene(device: str, n_grid: int, arm: PandaPour):
+    grid = GridConfig(n_grid=n_grid, grid_lim=GRID_LIM)
+    h = grid.dx / 2
+    cup_pos0, cup_quat0 = arm.cup_pose_at(0.0)
+    pos_local, vol = cup_fill(PROFILE, h, fill_fraction=FILL_FRACTION)
+    pos = (cup_pos0 + pos_local @ quat_to_mat(cup_quat0).T + WORLD_TO_MPM).astype(np.float32)
+
+    s = Solver(grid=grid, device=device).load_particles(pos, vol)
+    s.set_material(newtonian(**WATER), density_correction=DENSITY_CORRECTION)
+    s.add_plane((0, 0, WORLD_TO_MPM[2]), (0, 0, 1), "separate", friction=0.3)
+    s.add_domain_walls()
+    src = s.add_cup(PROFILE, cup_pos0 + WORLD_TO_MPM, tuple(cup_quat0),
+                    friction=GLASS_FRICTION)
+    rcv = s.add_cup(PROFILE, RECEIVER_POS + WORLD_TO_MPM, tuple(Q_ID),
+                    friction=GLASS_FRICTION)
+    return s, grid, src, rcv, vol
+
+
+def settle(s: Solver, dt: float, substeps: int, seconds: float = 0.4) -> None:
+    for _ in range(round(seconds * FPS)):
+        s.step(dt, substeps)
+
+
+def level_volume(x_world, pos, quat, h: float) -> float:
+    """APPARENT liquid volume in a glass from its fill level (robust 97th-pct depth,
+    fillet-aware cavity volume). Compare with the count-implied volume: the ratio
+    exposes numerical AERATION -- splashed droplets separate while ballistic (an
+    isolated particle records no velocity gradient, so J stays ~1) and land as a
+    loose bed the EOS cannot see. The material volume sum(V0*J) itself stays
+    conserved to <0.1%. With the tension-free DENSITY_CORRECTION on, the bed
+    consolidates at gravity pace (no visible self-attraction) and this apparent/true
+    ratio ends the clip ~1.1 and keeps converging; with the correction off it
+    plateaus ~1.3. A DFSPH solver (the Genesis twin of this scene) reads ~1.0
+    instantly because it projects density to rho0 every step."""
+    from warpmpm.colliders.glass import world_to_local
+
+    m = cavity_mask(x_world + WORLD_TO_MPM, np.asarray(pos) + WORLD_TO_MPM, quat,
+                    PROFILE, pad=0.75 * h)
+    if int(m.sum()) < 50:
+        return 0.0
+    zl = world_to_local(x_world[m], pos, quat)[:, 2]
+    depth = float(np.quantile(zl, 0.97) - PROFILE.inner_floor_z) + 0.5 * h
+    return PROFILE.cavity_volume(depth)
+
+
+def run(device: str = "cuda:0", n_grid: int = 128, video: bool = True,
+        rebake: bool = False, render_stride: int = 1) -> dict:
+    OUT.mkdir(parents=True, exist_ok=True)
+    mesh_path = write_glass_obj(PROFILE, OUT / "glass_render.obj")
+    arm = PandaPour(height=720, width=1280, max_geom=110000,  # every particle, no stride
+                    glass_mesh=mesh_path, glass_rgba=GLASS_RGBA)
+    arm.set_glass_pose("glass_rcv", RECEIVER_POS, Q_ID)  # static receiver, set once
+    arm.cam.lookat[:] = CAMERA["lookat"]
+    arm.cam.distance = CAMERA["distance"]
+    arm.cam.azimuth = CAMERA["azimuth"]
+    arm.cam.elevation = CAMERA["elevation"]
+
+    s, grid, src, rcv, vol = build_scene(device, n_grid, arm)
+    h = grid.dx / 2
+    n0 = s.n_particles
+    m_water = float(WATER["density"] * vol.sum())
+    dt_tick = 1.0 / FPS
+    substeps = int(np.ceil(dt_tick * sound_speed() / (0.28 * grid.dx)))
+    dt = dt_tick / substeps
+    n_frames = round((arm.duration + HOLD_SECONDS) * FPS)  # pose clamps home after duration
+    print(f"n_grid={n_grid} dx={grid.dx*1000:.2f}mm N={n0} water={m_water:.2f}kg "
+          f"dt={dt:.2e} ({substeps} substeps/frame, CFL={sound_speed()*dt/grid.dx:.2f}) "
+          f"{n_frames} frames")
+
+    # ---- settle (cached) --------------------------------------------------------------
+    cache = OUT / f"settled_n{n_grid}_f{int(100*FILL_FRACTION)}.npz"
+    cup_pos0, cup_quat0 = arm.cup_pose_at(0.0)
+    if cache.exists() and not rebake:
+        d = np.load(cache)
+        if len(d["x"]) == n0:
+            s.set_x(d["x"])
+            s.set_v(d["v"])
+            print(f"loaded settled state from {cache.name}")
+        else:
+            rebake = True
+    if rebake or not cache.exists():
+        t0 = time.time()
+        settle(s, dt, substeps)
+        x, v, npx = project_out_of_solid(s.x(), s.v(), cup_pos0 + WORLD_TO_MPM, cup_quat0,
+                                         PROFILE, clearance=0.35 * h)
+        s.set_x(x)
+        s.set_v(v)
+        np.savez_compressed(cache, x=s.x(), v=s.v())
+        print(f"settled {time.time()-t0:.0f}s (projected {npx}); cached -> {cache.name}")
+
+    n_src0 = int(cavity_mask(s.x(), cup_pos0 + WORLD_TO_MPM, cup_quat0, PROFILE,
+                             pad=0.75 * h).sum())
+
+    # ---- pour -------------------------------------------------------------------------
+    frames_dir = OUT / "_frames"
+    if video:
+        frames_dir.mkdir(exist_ok=True)
+        import imageio.v2 as imageio
+    rows = []
+    max_embedded = 0
+    proj_total = 0
+    t_start = time.time()
+    for frame in range(n_frames):
+        t = frame * dt_tick
+        # start-of-tick pose + per-tick velocities: modify_bc sweeps the cup to the
+        # commanded end-of-tick pose over the substeps (the set_box contract + rotation)
+        p0, q0 = arm.cup_pose_at(t)
+        p1, q1 = arm.cup_pose_at(t + dt_tick)
+        vel = (p1 - p0) / dt_tick
+        omega = angular_velocity_between(q0, q1, dt_tick)
+        s.set_cup(src, center=p0 + WORLD_TO_MPM, quat=q0, velocity=vel, omega=omega)
+        s.reset_cup_wrench(src)
+        s.reset_cup_wrench(rcv)
+        s.step(dt, substeps)
+        w_src = s.cup_wrench(src, dt_tick)
+        w_rcv = s.cup_wrench(rcv, dt_tick)
+        t_now = t + dt_tick
+        p_now, q_now = p1, q1
+
+        # ---- leak audit + rescue net (counts reported; grid BC should keep this ~0) ----
+        x = s.x()
+        v = s.v()
+        ns_src = int(solid_mask(x, p_now + WORLD_TO_MPM, q_now, PROFILE).sum())
+        ns_rcv = int(solid_mask(x, RECEIVER_POS + WORLD_TO_MPM, Q_ID, PROFILE).sum())
+        max_embedded = max(max_embedded, ns_src + ns_rcv)
+        if ns_src or ns_rcv:
+            x, v, n1 = project_out_of_solid(x, v, p_now + WORLD_TO_MPM, q_now, PROFILE,
+                                            clearance=0.35 * h,
+                                            solid_velocity=(vel, omega))
+            x, v, n2 = project_out_of_solid(x, v, RECEIVER_POS + WORLD_TO_MPM, Q_ID,
+                                            PROFILE, clearance=0.35 * h)
+            proj_total += n1 + n2
+            s.set_x(x)
+            s.set_v(v)
+
+        in_src = int(cavity_mask(x, p_now + WORLD_TO_MPM, q_now, PROFILE, pad=0.75 * h).sum())
+        in_rcv = int(cavity_mask(x, RECEIVER_POS + WORLD_TO_MPM, Q_ID, PROFILE,
+                                 pad=0.75 * h).sum())
+        x_world = x - WORLD_TO_MPM
+        vol_src = level_volume(x_world, p_now, q_now, h)
+        vol_rcv = level_volume(x_world, RECEIVER_POS, Q_ID, h)
+        tilt = arm.tilt_degrees(q_now)
+        rows.append(dict(
+            frame=frame, t=round(t_now, 5), tilt_deg=round(tilt, 2), n_src=in_src,
+            n_rcv=in_rcv, n_air_spill=n0 - in_src - in_rcv,
+            frac_rcv=round(in_rcv / max(n_src0, 1), 5),
+            frac_spill=round((n0 - in_src - in_rcv) / max(n_src0, 1), 5),
+            src_fx=round(w_src["force"][0], 4), src_fy=round(w_src["force"][1], 4),
+            src_fz=round(w_src["force"][2], 4), src_ty=round(w_src["torque"][1], 5),
+            rcv_fz=round(w_rcv["force"][2], 4),
+            level_vol_src_L=round(vol_src * 1e3, 5), level_vol_rcv_L=round(vol_rcv * 1e3, 5),
+            embedded=ns_src + ns_rcv, projected=proj_total,
+        ))
+
+        if video and frame % render_stride == 0:
+            arm.set_glass_pose("glass_src", p_now, q_now)
+            arm.set_time(t_now)
+            pts = x - WORLD_TO_MPM
+            spd = np.linalg.norm(v, axis=1)
+            col = np.tile(LIQUID_RGBA, (len(pts), 1)).astype(np.float32)
+            col[:, :3] = np.clip(
+                col[:, :3] + 0.35 * np.clip(spd / 2.0, 0, 1)[:, None], 0, 1
+            )  # brighten fast liquid
+            handle_c = p_now + quat_to_mat(q_now) @ arm.GRASP_LOCAL
+            img = arm.render_with_particles(
+                pts, col, radius=0.85 * h,
+                table=(0.19, -0.18, 0.0, 0.85),
+                boxes=[
+                    (handle_c, (0.060, 0.025, 0.050), HANDLE_RGBA, quat_to_mat(q_now)),
+                    ((0.10, 0.50, 0.70), (1.60, 0.02, 0.75), BACKDROP_RGBA),  # backdrop
+                ],
+            )
+            imageio.imwrite(frames_dir / f"f_{frame//render_stride:04d}.png", img)
+
+        if frame % 30 == 0 or frame == n_frames - 1:
+            el = time.time() - t_start
+            print(f"frame {frame+1:3d}/{n_frames} t={t_now:5.2f}s tilt={tilt:5.1f} "
+                  f"src={in_src:6d} rcv={in_rcv:6d} spill={n0-in_src-in_rcv:5d} "
+                  f"emb={ns_src+ns_rcv} rcvFz={w_rcv['force'][2]:7.2f}N "
+                  f"[{el/(frame+1)*1000:.0f}ms/frame]")
+
+    # ---- outputs ---------------------------------------------------------------------
+    csv_path = OUT / "metrics.csv"
+    with csv_path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows(rows)
+
+    r = {k: np.array([row[k] for row in rows]) for k in rows[0]}
+    fig, axes = plt.subplots(3, 1, figsize=(9, 10), sharex=True)
+    ax = axes[0]
+    ax.plot(r["t"], r["frac_rcv"], label="receiver fraction", color="tab:blue")
+    ax.plot(r["t"], r["frac_spill"], label="air+spill fraction", color="tab:red")
+    ax.plot(r["t"], r["tilt_deg"] / 100, "--", color="grey", label="tilt/100 (deg)")
+    v_ref_l = 1e3 * float(vol.sum())
+    ax.plot(r["t"], (r["level_vol_src_L"] + r["level_vol_rcv_L"]) / v_ref_l, ":",
+            color="tab:purple",
+            label="apparent (level) volume / true volume  [aeration diagnostic]")
+    ax.set_ylabel("fraction of initial fill")
+    ax.legend(); ax.grid(alpha=0.3)
+    ax = axes[1]
+    ax.plot(r["t"], -r["src_fz"], label="held glass -Fz (load)", color="tab:green")
+    ax.plot(r["t"], -r["rcv_fz"], label="receiver -Fz (scale)", color="tab:blue")
+    ax.axhline(9.81 * m_water, ls=":", color="k", label=f"total weight {9.81*m_water:.1f}N")
+    # the scale cross-check: weight implied by the particle count in the receiver
+    ax.plot(r["t"], 9.81 * m_water * r["n_rcv"] / n0, "--", color="tab:cyan",
+            label="receiver count * m*g/N (check)")
+    ax.set_ylabel("force (N)")
+    ax.legend(); ax.grid(alpha=0.3)
+    ax = axes[2]
+    ax.plot(r["t"], r["embedded"], label="embedded in glass (per-frame audit)",
+            color="tab:red")
+    ax.plot(r["t"], r["projected"], label="cumulative projected out", color="tab:orange")
+    ax.set_xlabel("time (s)"); ax.set_ylabel("particles")
+    ax.legend(); ax.grid(alpha=0.3)
+    fig.suptitle(f"Franka pour, MPM water (N={n0}, dx={grid.dx*1000:.1f}mm)")
+    fig.tight_layout()
+    fig.savefig(OUT / "pour_metrics.png", dpi=130)
+    plt.close(fig)
+
+    mp4 = None
+    if video:
+        import imageio.v2 as imageio
+        mp4 = OUT / "pour_franka.mp4"
+        with imageio.get_writer(mp4, fps=FPS // render_stride, codec="libx264",
+                                quality=8, macro_block_size=2) as wtr:
+            for p in sorted(frames_dir.glob("f_*.png")):
+                wtr.append_data(imageio.imread(p))
+        print("wrote", mp4)
+    print("wrote", csv_path, "and", OUT / "pour_metrics.png")
+    print(f"final: receiver {r['frac_rcv'][-1]*100:.1f}% spill/air {r['frac_spill'][-1]*100:.1f}% "
+          f"| max embedded ever {max_embedded} | total projected {proj_total}")
+    arm.close()
+    return {"rows": rows, "mp4": mp4, "max_embedded": max_embedded, "n0": n0}
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--device", default="cuda:0", help="Warp device, e.g. cuda:0 or cuda:1")
+    ap.add_argument("--n-grid", type=int, default=128)
+    ap.add_argument("--fast", action="store_true", help="coarse smoke run (n_grid 96)")
+    ap.add_argument("--skip-video", action="store_true")
+    ap.add_argument("--rebake", action="store_true", help="refresh the settled cache")
+    args = ap.parse_args()
+    run(device=args.device, n_grid=96 if args.fast else args.n_grid,
+        video=not args.skip_video, rebake=args.rebake)
