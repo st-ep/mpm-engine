@@ -43,8 +43,14 @@ class Solver:
 
     grid: GridConfig = field(default_factory=GridConfig)
     device: str = "auto"
+    # cadence (in control ticks) of the particle-box update + grid-edge guard. Both need a
+    # device-to-host readback of x and v, which is free on CPU but a pipeline sync on CUDA;
+    # GPU runs (where the captured graphs sweep the full grid and ignore the box anyway) can
+    # raise this to amortize the sync, at the cost of the edge guard firing that much later.
+    guard_interval: int = 1
     _sim: Any = field(default=None, init=False, repr=False)
     _step: int = field(default=0, init=False, repr=False)
+    _tick: int = field(default=0, init=False, repr=False)
     _vol0: Any = field(default=None, init=False, repr=False)
 
     def load_particles(self, pos: np.ndarray, vol: np.ndarray) -> Solver:
@@ -160,7 +166,9 @@ class Solver:
         return np.asarray(impulse, dtype=float) / dt
 
     def step(self, dt: float, substeps: int = 1) -> Solver:
-        self._update_grid_box(dt, substeps)
+        if self._tick % max(1, self.guard_interval) == 0:
+            self._update_grid_box(dt, substeps)
+        self._tick += 1
         for _ in range(substeps):
             self._sim.p2g2p(self._step, dt, device=self.device)
             self._step += 1

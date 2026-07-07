@@ -874,7 +874,11 @@ def compute_stress_from_F_trial(
         V = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         sig = wp.vec3(0.0)
         stress = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        wp.svd3(state.particle_F[p], U, sig, V)
+        # the SVD feeds the solid stress paths only; fluids (6), newtonian/Bingham (10),
+        # tabulated viscous (12) and stationary/rigid (7, 8) never read U/V/sig, and the
+        # per-particle svd3 dominates their stress cost
+        if mat != 6 and mat != 7 and mat != 8 and mat != 10 and mat != 12:
+            wp.svd3(state.particle_F[p], U, sig, V)
         if mat == 0 or mat == 5:
             stress = kirchoff_stress_FCR(
                 state.particle_F[p], U, V, J, model.mu[p], model.lam[p]
