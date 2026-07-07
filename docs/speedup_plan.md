@@ -141,6 +141,11 @@ is a no-op either way, which is why Steps 1 and 2 are testable on the Mac first.
      or re-capture when a box changes by more than the halo; or disable restriction
      inside the captured region on GPU, where the dense sweep is cheap anyway.
    The pragmatic v1 on the GPU box: capture the inner phases, keep BC + modify live.
+   IMPLEMENTED (dark, per this design): segment A = zero/stress/p2g/normalize(+damping),
+   segment B = g2p, both at full grid dims; first substep runs live to JIT-load modules;
+   any capture error falls back to live launches. sim.use_cuda_graph=False disables.
+   PENDING GPU VALIDATION: run `pytest tests/test_cuda_graph.py -v` on the CUDA box
+   (equivalence vs live + a substep-time benchmark); the tests skip without CUDA.
 3. bench_step before and after on the GPU box; gate: existing suite green on CPU and GPU.
 
 ## Regime coverage: which solver for which scene

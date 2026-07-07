@@ -273,6 +273,16 @@ class MPM_Simulator_WARP:
         # synchronize implicitly). profile=True restores the synced timers and fills
         # time_profile; default off so the GPU pipeline never stalls for a stopwatch.
         self.profile = False
+        # CUDA graph capture of the fixed-shape substep segments (speedup_plan Step 3):
+        # zero->stress->p2g->normalize(+damping) and g2p replay as two graphs; the BC
+        # launches and host-side pose integration stay live between them. CUDA only;
+        # the first substep runs live so modules JIT-load before capture; any capture
+        # error falls back to live launches for the rest of the run.
+        self.use_cuda_graph = True
+        self._graph_A = None
+        self._graph_B = None
+        self._graph_sig = None
+        self._graph_warmup = 0
 
         self.tailored_struct_for_bc = MPMtailoredStruct()
         self.pre_p2g_operations = []
@@ -752,38 +762,98 @@ class MPM_Simulator_WARP:
             v_cm_torch[:] = torch.from_numpy(v_cm_np.astype(np.float32)).to(v_cm_torch.device)
             omega_torch[:] = torch.from_numpy(omega_np.astype(np.float32)).to(omega_torch.device)
 
+    def _capture_substep_graphs(self, dt, device, grid_size):
+        """CUDA-graph capture of the fixed-shape substep segments (speedup_plan Step 3).
+        Segment A: zero -> stress -> p2g -> normalize (+ damping when enabled); segment
+        B: g2p. Captured at FULL grid dims so the graph shape never changes (the particle
+        box restriction stays a CPU optimization; dense sweeps are cheap on GPU). The BC
+        launches and host-side pose integration stay live between the two graphs because
+        their inputs (time, poses, restricted dims) change per substep."""
+        full_lo = wp.vec3i(0, 0, 0)
+        wp.capture_begin(device)
+        try:
+            wp.launch(kernel=zero_grid, dim=grid_size,
+                      inputs=[self.mpm_state, self.mpm_model, full_lo], device=device)
+            wp.launch(kernel=compute_stress_from_F_trial, dim=self.n_particles,
+                      inputs=[self.mpm_state, self.mpm_model, dt], device=device)
+            wp.launch(kernel=p2g_apic_with_stress, dim=self.n_particles,
+                      inputs=[self.mpm_state, self.mpm_model, dt], device=device)
+            wp.launch(kernel=grid_normalization_and_gravity, dim=grid_size,
+                      inputs=[self.mpm_state, self.mpm_model, dt, full_lo], device=device)
+            if self.mpm_model.grid_v_damping_scale < 1.0:
+                wp.launch(kernel=add_damping_via_grid, dim=grid_size,
+                          inputs=[self.mpm_state, self.mpm_model.grid_v_damping_scale,
+                                  full_lo], device=device)
+        finally:
+            self._graph_A = wp.capture_end(device)
+        wp.capture_begin(device)
+        try:
+            wp.launch(kernel=g2p, dim=self.n_particles,
+                      inputs=[self.mpm_state, self.mpm_model, dt], device=device)
+        finally:
+            self._graph_B = wp.capture_end(device)
+
     def p2g2p(self, step, dt, device="cuda:0"):
         grid_size = (
             self.mpm_model.grid_dim_x,
             self.mpm_model.grid_dim_y,
             self.mpm_model.grid_dim_z,
         )
-        # restricted grid sweeps: zero/normalize/damping run over the live particle box
-        # when the wrapper has set one; zeroing uses the union with the previous box so
-        # nodes leaving the box are cleared exactly once
-        gbox = self.grid_launch_box if (self.restrict_grid and self.grid_launch_box) else None
-        if gbox is None:
-            g_lo, g_dims = wp.vec3i(0, 0, 0), grid_size
-            z_lo, z_dims = g_lo, g_dims
-            self._prev_grid_box = None
-        else:
-            g_lo, g_dims = wp.vec3i(*gbox[0]), gbox[1]
-            prev = self._prev_grid_box
-            if prev is None:
-                z_lo, z_dims = g_lo, g_dims
-            else:
-                zl = tuple(min(prev[0][i], gbox[0][i]) for i in range(3))
-                zh = tuple(max(prev[0][i] + prev[1][i], gbox[0][i] + gbox[1][i])
-                           for i in range(3))
-                z_lo = wp.vec3i(*zl)
-                z_dims = tuple(zh[i] - zl[i] for i in range(3))
-            self._prev_grid_box = gbox
-        wp.launch(
-            kernel=zero_grid,
-            dim=z_dims,
-            inputs=[self.mpm_state, self.mpm_model, z_lo],
-            device=device,
+        # CUDA graph fast path: replay the fixed-shape inner segments as graphs. The
+        # first substep runs live so warp modules JIT-load before capture; particle
+        # modifiers take self.time per substep so their presence disables capture.
+        use_graph = (
+            self.use_cuda_graph
+            and self._graph_warmup > 0
+            and str(device).startswith("cuda")
+            and not self.pre_p2g_operations
+            and not self.particle_velocity_modifiers
         )
+        if use_graph:
+            sig = (float(dt), bool(self.mpm_model.grid_v_damping_scale < 1.0))
+            if self._graph_sig != sig:
+                try:
+                    self._capture_substep_graphs(dt, device, grid_size)
+                    self._graph_sig = sig
+                except Exception:
+                    self._graph_A = self._graph_B = self._graph_sig = None
+                    self.use_cuda_graph = False
+                    use_graph = False
+        self._graph_warmup = 1
+
+        if use_graph:
+            # graphs zero and normalize the FULL grid (dense sweeps are cheap on GPU;
+            # the box restriction stays a CPU optimization), so no union bookkeeping
+            self._prev_grid_box = None
+            wp.capture_launch(self._graph_A)
+        else:
+            # restricted grid sweeps: zero/normalize/damping run over the live particle
+            # box when the wrapper has set one; zeroing uses the union with the previous
+            # box so nodes leaving the box are cleared exactly once
+            gbox = (self.grid_launch_box
+                    if (self.restrict_grid and self.grid_launch_box) else None)
+            if gbox is None:
+                g_lo, g_dims = wp.vec3i(0, 0, 0), grid_size
+                z_lo, z_dims = g_lo, g_dims
+                self._prev_grid_box = None
+            else:
+                g_lo, g_dims = wp.vec3i(*gbox[0]), gbox[1]
+                prev = self._prev_grid_box
+                if prev is None:
+                    z_lo, z_dims = g_lo, g_dims
+                else:
+                    zl = tuple(min(prev[0][i], gbox[0][i]) for i in range(3))
+                    zh = tuple(max(prev[0][i] + prev[1][i], gbox[0][i] + gbox[1][i])
+                               for i in range(3))
+                    z_lo = wp.vec3i(*zl)
+                    z_dims = tuple(zh[i] - zl[i] for i in range(3))
+                self._prev_grid_box = gbox
+            wp.launch(
+                kernel=zero_grid,
+                dim=z_dims,
+                inputs=[self.mpm_state, self.mpm_model, z_lo],
+                device=device,
+            )
 
         # apply pre-p2g operations on particles
         for k in range(len(self.pre_p2g_operations)):
@@ -802,52 +872,53 @@ class MPM_Simulator_WARP:
                 device=device,
             )
 
-        # compute stress = stress(returnMap(F_trial))
-        with wp.ScopedTimer(
-            "compute_stress_from_F_trial",
-            synchronize=self.profile, active=self.profile,
-            print=False,
-            dict=self.time_profile,
-        ):
-            wp.launch(
-                kernel=compute_stress_from_F_trial,
-                dim=self.n_particles,
-                inputs=[self.mpm_state, self.mpm_model, dt],
-                device=device,
-            )  # F and stress are updated
+        if not use_graph:
+            # compute stress = stress(returnMap(F_trial))
+            with wp.ScopedTimer(
+                "compute_stress_from_F_trial",
+                synchronize=self.profile, active=self.profile,
+                print=False,
+                dict=self.time_profile,
+            ):
+                wp.launch(
+                    kernel=compute_stress_from_F_trial,
+                    dim=self.n_particles,
+                    inputs=[self.mpm_state, self.mpm_model, dt],
+                    device=device,
+                )  # F and stress are updated
 
-        # p2g
-        with wp.ScopedTimer(
-            "p2g",
-            synchronize=self.profile, active=self.profile,
-            print=False,
-            dict=self.time_profile,
-        ):
-            wp.launch(
-                kernel=p2g_apic_with_stress,
-                dim=self.n_particles,
-                inputs=[self.mpm_state, self.mpm_model, dt],
-                device=device,
-            )  # apply p2g'
+            # p2g
+            with wp.ScopedTimer(
+                "p2g",
+                synchronize=self.profile, active=self.profile,
+                print=False,
+                dict=self.time_profile,
+            ):
+                wp.launch(
+                    kernel=p2g_apic_with_stress,
+                    dim=self.n_particles,
+                    inputs=[self.mpm_state, self.mpm_model, dt],
+                    device=device,
+                )  # apply p2g'
 
-        # grid update
-        with wp.ScopedTimer(
-            "grid_update", synchronize=self.profile, active=self.profile, print=False, dict=self.time_profile
-        ):
-            wp.launch(
-                kernel=grid_normalization_and_gravity,
-                dim=g_dims,
-                inputs=[self.mpm_state, self.mpm_model, dt, g_lo],
-                device=device,
-            )
+            # grid update
+            with wp.ScopedTimer(
+                "grid_update", synchronize=self.profile, active=self.profile, print=False, dict=self.time_profile
+            ):
+                wp.launch(
+                    kernel=grid_normalization_and_gravity,
+                    dim=g_dims,
+                    inputs=[self.mpm_state, self.mpm_model, dt, g_lo],
+                    device=device,
+                )
 
-        if self.mpm_model.grid_v_damping_scale < 1.0:
-            wp.launch(
-                kernel=add_damping_via_grid,
-                dim=g_dims,
-                inputs=[self.mpm_state, self.mpm_model.grid_v_damping_scale, g_lo],
-                device=device,
-            )
+            if self.mpm_model.grid_v_damping_scale < 1.0:
+                wp.launch(
+                    kernel=add_damping_via_grid,
+                    dim=g_dims,
+                    inputs=[self.mpm_state, self.mpm_model.grid_v_damping_scale, g_lo],
+                    device=device,
+                )
 
         # apply BC on grid
         with wp.ScopedTimer(
@@ -889,12 +960,15 @@ class MPM_Simulator_WARP:
         with wp.ScopedTimer(
             "g2p", synchronize=self.profile, active=self.profile, print=False, dict=self.time_profile
         ):
-            wp.launch(
-                kernel=g2p,
-                dim=self.n_particles,
-                inputs=[self.mpm_state, self.mpm_model, dt],
-                device=device,
-            )  # x, v, C, F_trial are updated
+            if use_graph:
+                wp.capture_launch(self._graph_B)
+            else:
+                wp.launch(
+                    kernel=g2p,
+                    dim=self.n_particles,
+                    inputs=[self.mpm_state, self.mpm_model, dt],
+                    device=device,
+                )  # x, v, C, F_trial are updated
 
         # rigid body step (skipped when no rigid bodies are present)
         if self.n_rigid_bodies > 0:
