@@ -28,6 +28,22 @@ def _ensure_warp() -> None:
         _INITED = True
 
 
+# upper-triangular covariance packing used by the kernels: xx, xy, xz, yy, yz, zz
+_COV6_IDX = ((0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2))
+
+
+def _cov_to_six(cov: np.ndarray) -> np.ndarray:
+    """Normalize a covariance array to (N, 6) float32 in upper-triangular order
+    (xx, xy, xz, yy, yz, zz). Accepts (N, 6) already packed or (N, 3, 3) symmetric."""
+    cov = np.asarray(cov)
+    if cov.ndim == 2 and cov.shape[1] == 6:
+        return np.ascontiguousarray(cov, dtype=np.float32)
+    if cov.ndim == 3 and cov.shape[1:] == (3, 3):
+        out = np.stack([cov[:, i, j] for (i, j) in _COV6_IDX], axis=1)
+        return np.ascontiguousarray(out, dtype=np.float32)
+    raise ValueError(f"cov must be (N, 6) or (N, 3, 3), got shape {cov.shape}")
+
+
 @dataclass
 class GridConfig:
     n_grid: int = 64
@@ -80,7 +96,22 @@ class Solver:
     _tick: int = field(default=0, init=False, repr=False)
     _vol0: Any = field(default=None, init=False, repr=False)
 
-    def load_particles(self, pos: np.ndarray, vol: np.ndarray) -> Solver:
+    def load_particles(self, pos: np.ndarray, vol: np.ndarray, cov: np.ndarray | None = None,
+                       cov_mode: str = "step") -> Solver:
+        """Load particle positions and volumes, optionally with per-particle covariances
+        for Gaussian-splat coupling.
+
+        cov: (N, 6) upper-triangular (xx, xy, xz, yy, yz, zz) or (N, 3, 3), in sim-space
+        units (the caller applies any world->sim scaling first). Normalized to (N, 6)
+        float32. cov=None reproduces the covariance-free behavior.
+
+        cov_mode selects how the covariance evolves:
+          "step":   the covariance advects each substep as
+                    Sigma_{n+1} = Sigma_n + dt (L Sigma_n + Sigma_n L^T). The fused and
+                    split step pipelines advect it identically (see step()).
+          "from_F": the covariance is reconstructed at export time as Sigma' = F Sigma0
+                    F^T from the stored rest-frame covariance.
+        """
         import torch
 
         _ensure_warp()
@@ -92,13 +123,31 @@ class Solver:
                 print(f"warpmpm: device auto -> {self.device}")
         self._vol0 = vol.astype(np.float32).copy()
         self._sim = MPM_Simulator_WARP(len(pos), device=self.device)
+        tensor_cov = None
+        if cov is not None:
+            if cov_mode not in ("step", "from_F"):
+                raise ValueError(f"cov_mode must be 'step' or 'from_F', got {cov_mode!r}")
+            cov6 = _cov_to_six(cov)
+            if cov6.shape[0] != len(pos):
+                raise ValueError(f"cov has {cov6.shape[0]} rows, expected {len(pos)}")
+            tensor_cov = torch.from_numpy(cov6)
         self._sim.load_initial_data_from_torch(
             torch.from_numpy(pos.astype(np.float32)),
             torch.from_numpy(vol.astype(np.float32)),
+            tensor_cov=tensor_cov,
             n_grid=self.grid.n_grid,
             grid_lim=self.grid.grid_lim,
             device=self.device,
         )
+        if cov is not None and cov_mode == "step":
+            # load_initial_data_from_torch calls initialize(), which builds a fresh
+            # mpm_model with update_cov_with_F=False, so the flag has to be set AFTER
+            # load. particle_cov is then cloned from the loaded particle_init_cov (the
+            # rest-frame covariance), never aliased to it, so per-substep advection
+            # starts from the real covariance and leaves init_cov untouched for a later
+            # cov_mode switch or a from_F export.
+            self._sim.mpm_model.update_cov_with_F = True
+            self._sim.mpm_state.particle_cov = wp.clone(self._sim.mpm_state.particle_init_cov)
         return self
 
     def set_material(self, material, **overrides: float) -> Solver:
@@ -270,6 +319,9 @@ class Solver:
             self._sim.rebuild_active_blocks(self.device)
         self._sim.profile = self.profile
         self._tick += 1
+        # covariance transport (update_cov_with_F) needs no extra gate here: the fused
+        # kernel g2p_stress_p2g calls the same g2p_particle wp.func as the split g2p, and
+        # the cov advection lives inside it, so both pipelines advect cov identically.
         fused_ok = (self.fused and not self.sparse
                     and not self._sim.pre_p2g_operations
                     and not self._sim.particle_velocity_modifiers
@@ -392,6 +444,46 @@ class Solver:
         J = np.linalg.det(self.F())
         self._warn_if_inverted(J)
         return self.stress() / np.clip(np.abs(J), 1e-9, None)[:, None, None]
+
+    def cov(self) -> np.ndarray:
+        """Per-particle covariance, shape (N, 6) upper-triangular (xx, xy, xz, yy, yz, zz).
+        In cov_mode "step" this is the advected covariance; in "from_F" it is rebuilt as
+        F Sigma0 F^T at call time. Only meaningful when load_particles was given cov."""
+        return self._sim.export_particle_cov_to_torch(device=self.device).cpu().numpy(
+            ).reshape(-1, 6)
+
+    def R(self) -> np.ndarray:
+        """Per-particle polar rotation R of F (Sigma' = R Sigma0 R^T holds under rigid
+        motion), shape (N, 3, 3). The splat SH view-direction trick applies R^T to the
+        camera->splat direction. The kernel stores R^T internally, so this transposes it
+        back to the polar rotation for a mathematically clean getter."""
+        R = self._sim.export_particle_R_to_torch(device=self.device).cpu().numpy(
+            ).reshape(-1, 3, 3)
+        return np.transpose(R, (0, 2, 1))
+
+    # --- torch-resident exports (tensors on self.device; read-only, per kernel behavior) --
+    def x_torch(self):
+        """Particle positions as a torch tensor on self.device, shape (N, 3)."""
+        return self._sim.export_particle_x_to_torch()
+
+    def v_torch(self):
+        """Particle velocities as a torch tensor on self.device, shape (N, 3)."""
+        return self._sim.export_particle_v_to_torch()
+
+    def F_torch(self):
+        """Deformation gradient as a torch tensor on self.device, shape (N, 3, 3)."""
+        return self._sim.export_particle_F_to_torch().reshape(-1, 3, 3)
+
+    def cov_torch(self):
+        """Per-particle covariance as a torch tensor on self.device, shape (N, 6),
+        upper-triangular (xx, xy, xz, yy, yz, zz). See cov() for the two cov_mode meanings."""
+        return self._sim.export_particle_cov_to_torch(device=self.device).reshape(-1, 6)
+
+    def R_torch(self):
+        """Per-particle polar rotation R of F as a torch tensor on self.device, shape
+        (N, 3, 3). Transposes the kernel's stored R^T; see R() for the convention."""
+        R = self._sim.export_particle_R_to_torch(device=self.device).reshape(-1, 3, 3)
+        return R.transpose(1, 2)
 
     @property
     def n_particles(self) -> int:

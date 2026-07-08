@@ -22,7 +22,8 @@ surface = ["scipy>=1.11", "scikit-image>=0.22", "pyvista>=0.43"]   # marching-cu
 geometry = ["scipy>=1.11", "trimesh>=4.0"]         # mesh->SDF colliders: scipy cKDTree fast path, trimesh mesh IO
 ident = ["scipy>=1.11", "osqp>=0.6", "matplotlib>=3.8"]   # warp-free EUCLID identifier (weak-form assembly, ridge/QP solve, gates)
 io = ["h5py>=3.10"]                                # optional .h5 particle loader (load_from_sampling)
-all = ["warpmpm[dev,mujoco,render,surface,geometry,ident,io]"]    # everything, for a full dev/demo checkout
+splats = ["plyfile>=1.0", "scipy>=1.11"]           # Gaussian-splat scenes: PLY load/save (plyfile), filler kNN (scipy cKDTree)
+all = ["warpmpm[dev,mujoco,render,surface,geometry,ident,io,splats]"]    # everything, for a full dev/demo checkout
 
 [build-system]
 requires = ["hatchling"]

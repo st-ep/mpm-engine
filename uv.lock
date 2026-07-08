@@ -751,6 +751,18 @@ wheels = [
 ]
 
 [[package]]
+name = "plyfile"
+version = "1.1.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fd/35/fe6e7cb8048e4055c7bdeae4287ee4b4e5fd230d9373744f570a6ce2721d/plyfile-1.1.4.tar.gz", hash = "sha256:29daf18c0957a0957c5a77edff7b92acfeff90c9b64ea6c2ab2dd6f44ddc50d6", size = 36162, upload-time = "2026-05-28T21:33:04.909Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b7/d0/2e912d5e1fa017e10c196609d008ff5954ddb9d0487de77a5de03141613a/plyfile-1.1.4-py3-none-any.whl", hash = "sha256:69eb9bfa85de9396e516e89d5b87abc8640e78b5dddd9df25926fb33df314edb", size = 36455, upload-time = "2026-05-28T21:33:03.804Z" },
+]
+
+[[package]]
 name = "pooch"
 version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1176,6 +1188,7 @@ all = [
     { name = "mujoco" },
     { name = "osqp" },
     { name = "pillow" },
+    { name = "plyfile" },
     { name = "pytest" },
     { name = "pyvista" },
     { name = "robot-descriptions" },
@@ -1212,6 +1225,10 @@ render = [
     { name = "matplotlib" },
     { name = "pillow" },
 ]
+splats = [
+    { name = "plyfile" },
+    { name = "scipy" },
+]
 surface = [
     { name = "pyvista" },
     { name = "scikit-image" },
@@ -1229,6 +1246,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "osqp", marker = "extra == 'ident'", specifier = ">=0.6" },
     { name = "pillow", marker = "extra == 'render'", specifier = ">=10.0" },
+    { name = "plyfile", marker = "extra == 'splats'", specifier = ">=1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pyvista", marker = "extra == 'surface'", specifier = ">=0.43" },
     { name = "robot-descriptions", marker = "extra == 'mujoco'", specifier = ">=1.10" },
@@ -1236,14 +1254,15 @@ requires-dist = [
     { name = "scikit-image", marker = "extra == 'surface'", specifier = ">=0.22" },
     { name = "scipy", marker = "extra == 'geometry'", specifier = ">=1.11" },
     { name = "scipy", marker = "extra == 'ident'", specifier = ">=1.11" },
+    { name = "scipy", marker = "extra == 'splats'", specifier = ">=1.11" },
     { name = "scipy", marker = "extra == 'surface'", specifier = ">=1.11" },
     { name = "torch", specifier = ">=2.4" },
     { name = "trimesh", marker = "extra == 'geometry'", specifier = ">=4.0" },
     { name = "ty", marker = "extra == 'dev'" },
     { name = "warp-lang", specifier = ">=1.10.1,<2" },
-    { name = "warpmpm", extras = ["dev", "mujoco", "render", "surface", "geometry", "ident", "io"], marker = "extra == 'all'" },
+    { name = "warpmpm", extras = ["dev", "mujoco", "render", "surface", "geometry", "ident", "io", "splats"], marker = "extra == 'all'" },
 ]
-provides-extras = ["dev", "mujoco", "render", "surface", "geometry", "ident", "io", "all"]
+provides-extras = ["dev", "mujoco", "render", "surface", "geometry", "ident", "io", "splats", "all"]
 
 [[package]]
 name = "zipp"

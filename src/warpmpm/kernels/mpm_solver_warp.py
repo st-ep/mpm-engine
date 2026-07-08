@@ -427,7 +427,10 @@ class MPM_Simulator_WARP:
             )
 
             if self.mpm_model.update_cov_with_F:
-                self.mpm_state.particle_cov = self.mpm_state.particle_init_cov
+                # clone, do not alias: the per-substep update_cov writes into
+                # particle_cov every step, and aliasing it to particle_init_cov would
+                # corrupt the rest-frame covariance that compute_cov_from_F needs.
+                self.mpm_state.particle_cov = wp.clone(self.mpm_state.particle_init_cov)
 
         # initial velocity is default to zero
         wp.launch(
