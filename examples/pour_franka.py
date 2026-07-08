@@ -286,11 +286,13 @@ def level_volume(x_world, pos, quat, h: float) -> float:
 def run(device: str = "auto", n_grid: int = 192, video: bool = True,
         record: bool = False, rebake: bool = False, render_stride: int = 1,
         frames: int | None = None, render_workers: int = 0,
-        render_max: int = RENDER_MAX, sparse: bool = False) -> dict:
+        render_max: int = RENDER_MAX, sparse: bool = False,
+        profile: bool = False) -> dict:
     OUT.mkdir(parents=True, exist_ok=True)
     arm = make_arm(write_glass_obj(PROFILE, OUT / "glass_render.obj"))
 
     s, grid, src, rcv, vol = build_scene(device, n_grid, arm, sparse=sparse)
+    s.profile = profile
     h = grid.dx / 2
     n0 = s.n_particles
     m_liq = float(HONEY["density"] * vol.sum())
@@ -479,6 +481,11 @@ def run(device: str = "auto", n_grid: int = 192, video: bool = True,
     print(f"timing: sim+wrench {t_sim:.0f}s | audit+metrics (host numpy) {t_host:.0f}s | "
           f"render/record io {t_io:.0f}s | per frame "
           f"{t_sim/n_frames*1000:.0f}/{t_host/n_frames*1000:.0f}/{t_io/n_frames*1000:.0f} ms")
+    if profile:
+        print(s.profile_report())
+        print(f"  untimed (host python, launches, box/pose updates): "
+              f"{t_sim - sum(sum(v) for v in s._sim.time_profile.values()) / 1000.0:.1f}s "
+              f"of the sim block")
     arm.close()
 
     if record:
@@ -519,6 +526,9 @@ if __name__ == "__main__":
     ap.add_argument("--sparse", action="store_true",
                     help="active-block sparse grid compute (disables CUDA graph capture; "
                          "A/B it against the default and WARPMPM_NO_CUDA_GRAPH=1)")
+    ap.add_argument("--profile", action="store_true",
+                    help="per-phase substep timing table (forces live launches + a device "
+                         "sync per phase, so the run is slower; the shares are the signal)")
     args = ap.parse_args()
     if args.render_only:
         render_recording(96 if args.fast else args.n_grid,
@@ -528,4 +538,4 @@ if __name__ == "__main__":
             video=not args.skip_video and not args.record, record=args.record,
             rebake=args.rebake, frames=args.frames,
             render_workers=args.render_workers, render_max=args.render_max,
-            sparse=args.sparse)
+            sparse=args.sparse, profile=args.profile)

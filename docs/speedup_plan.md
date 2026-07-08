@@ -173,6 +173,33 @@ the remaining levers are substep COUNT (implicit density projection, ~25x,
 Step 4) and, if particle work must shrink, claymore-style particle binning +
 shared-memory P2G (port the design only; GPUMPM is GPLv3).
 
+## Step 5: claymore-style P2G (particle-bound regime, after the 192^3 A/B)
+
+Target: the ~90 percent of the large-scale substep that is particle work.
+Profile FIRST (`pour_franka --profile`: per-phase table, live launches + per-phase
+sync; shares are the signal) so each increment is judged against the phase it
+attacks. Design ported from GPUMPM/claymore papers only; their code is GPLv3 and
+must never be read or copied.
+
+5a. Spatial sort. Periodically (every K ticks, K ~ 4 to 16; particles move well
+    under a cell per tick) radix-sort particle indices by 4^3-block Morton-ish key
+    (wp.utils.radix_sort_pairs on device) and apply the permutation to every
+    particle array through a scratch buffer, COPYING BACK IN PLACE (wp.copy) --
+    array-pointer stability is an engine contract (captured graphs, cached views).
+    Win mechanism: threads in a warp scatter to the same or adjacent grid nodes
+    (L2 locality, fewer serialized atomic cascades) and G2P gathers coalesce.
+    Literature: 1.5 to 3x on P2G alone. Gates: conservation exact, positions match
+    unsorted run to atomic-reorder tolerance (NOT bitwise; atomics commute only
+    approximately in float), bench at the 192^3 pour mid-tilt state.
+5b. Warp-tile shared-memory P2G: one CUDA block per active 4^3 grid block,
+    particles binned to blocks (5a's sort gives the bins for free), scatter
+    accumulated in shared memory with warp reductions, one global atomic per node
+    per block at the end. This is the real claymore win (their reported P2G
+    speedups are 3 to 10x) but requires warp's tile primitives or a hand-rolled
+    kernel; evaluate after 5a's numbers are in.
+Sequencing vs Step 4 (implicit projection): Step 4 cuts substep COUNT ~25x and
+outranks both; 5a is cheap enough to land first if it clears its gates.
+
 ## Regime coverage: which solver for which scene
 
 The implicit umbrella is three related solvers sharing grid DOFs, SDF-as-Dirichlet

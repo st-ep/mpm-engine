@@ -893,6 +893,7 @@ class MPM_Simulator_WARP:
         use_graph = (
             self.use_cuda_graph
             and not sparse
+            and not self.profile  # per-phase timers need live launches
             and self._graph_warmup > 0
             and str(device).startswith("cuda")
             and not self.pre_p2g_operations
@@ -918,9 +919,12 @@ class MPM_Simulator_WARP:
             b = self._blk
             bd_v = wp.vec3i(b["bd"][0], b["bd"][1], b["bd"][2])
             if b["union_n"] > 0:
-                wp.launch(kernel=zero_grid_blocks, dim=b["union_n"] * 64,
-                          inputs=[self.mpm_state, self.mpm_model, b["union_list"], bd_v],
-                          device=device)
+                with wp.ScopedTimer("zero_grid", synchronize=self.profile,
+                                    active=self.profile, print=False,
+                                    dict=self.time_profile):
+                    wp.launch(kernel=zero_grid_blocks, dim=b["union_n"] * 64,
+                              inputs=[self.mpm_state, self.mpm_model, b["union_list"], bd_v],
+                              device=device)
         elif use_graph:
             # graphs zero and normalize the FULL grid (dense sweeps are cheap on GPU;
             # the box restriction stays a CPU optimization), so no union bookkeeping
@@ -948,12 +952,15 @@ class MPM_Simulator_WARP:
                     z_lo = wp.vec3i(*zl)
                     z_dims = tuple(zh[i] - zl[i] for i in range(3))
                 self._prev_grid_box = gbox
-            wp.launch(
-                kernel=zero_grid,
-                dim=z_dims,
-                inputs=[self.mpm_state, self.mpm_model, z_lo],
-                device=device,
-            )
+            with wp.ScopedTimer("zero_grid", synchronize=self.profile,
+                                active=self.profile, print=False,
+                                dict=self.time_profile):
+                wp.launch(
+                    kernel=zero_grid,
+                    dim=z_dims,
+                    inputs=[self.mpm_state, self.mpm_model, z_lo],
+                    device=device,
+                )
 
         # apply pre-p2g operations on particles
         for k in range(len(self.pre_p2g_operations)):

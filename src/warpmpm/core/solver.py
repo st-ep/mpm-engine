@@ -54,6 +54,11 @@ class Solver:
     # occupied region is not box-shaped (separated bodies, spread fluid, large empty
     # domains). Storage stays dense; takes precedence over the CUDA-graph fast path.
     sparse: bool = False
+    # per-phase substep profiling: syncs the device around every kernel phase and
+    # accumulates timings (zero/stress/p2g/grid_update/BC/g2p). Forces live launches
+    # (a captured graph cannot be timed per phase), so a profiled run is slower;
+    # the SHARES are the signal. Read the result with profile_report().
+    profile: bool = False
     _sim: Any = field(default=None, init=False, repr=False)
     _step: int = field(default=0, init=False, repr=False)
     _tick: int = field(default=0, init=False, repr=False)
@@ -244,11 +249,28 @@ class Solver:
             self._update_grid_box(dt, substeps)
         if self.sparse:
             self._sim.rebuild_active_blocks(self.device)
+        self._sim.profile = self.profile
         self._tick += 1
         for _ in range(substeps):
             self._sim.p2g2p(self._step, dt, device=self.device)
             self._step += 1
         return self
+
+    def profile_report(self) -> str:
+        """Aggregate the per-phase timings collected while profile=True into a table
+        (total seconds, ms per substep, share of timed device work)."""
+        prof = getattr(self._sim, "time_profile", {}) or {}
+        rows = [(k, sum(v) / 1000.0, len(v)) for k, v in prof.items() if v]
+        if not rows:
+            return "profile_report: no samples (set solver.profile = True and step)"
+        timed = sum(t for _, t, _ in rows)
+        rows.sort(key=lambda r: -r[1])
+        lines = [f"substep profile over {self._step} substeps "
+                 f"(timed device work {timed:.1f}s; live launches + per-phase sync):"]
+        for name, tot, n in rows:
+            lines.append(f"  {name:<28s} {tot:7.1f}s  {tot / max(n, 1) * 1000:8.3f} ms/substep"
+                         f"  {tot / timed * 100:5.1f}%")
+        return "\n".join(lines)
 
     def _update_grid_box(self, dt: float, substeps: int) -> None:
         """Once per control tick: (a) guard against particles reaching the grid edge,
