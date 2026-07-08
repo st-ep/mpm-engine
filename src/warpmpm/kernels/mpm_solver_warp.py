@@ -1878,10 +1878,26 @@ class MPM_Simulator_WARP:
                         0.0,
                     )
 
-        self.collider_aabbs.append(None)   # boundary shells: full-grid fallback
-        self.collider_labels.append("domain_walls")
-        self.grid_postprocess.append(collide)
-        self.modify_bc.append(None)
+        # six thin face shells instead of one full-grid launch: the kernel only acts
+        # within `padding` cells of a face, so sweeping the interior paid ~n^3 nodes
+        # for ~18 n^2 of real work (the largest BC row in the 192^3 pour profile).
+        # A node in two shells (edges/corners) just re-runs an idempotent projection.
+        nx = self.mpm_model.grid_dim_x
+        ny = self.mpm_model.grid_dim_y
+        nz = self.mpm_model.grid_dim_z
+        pad = 3
+        shells = [
+            ((0, 0, 0), (pad, ny, nz)), ((nx - pad, 0, 0), (pad, ny, nz)),
+            ((0, 0, 0), (nx, pad, nz)), ((0, ny - pad, 0), (nx, pad, nz)),
+            ((0, 0, 0), (nx, ny, pad)), ((0, 0, nz - pad), (nx, ny, pad)),
+        ]
+        for i, box in enumerate(shells):
+            if i > 0:
+                self.collider_params.append(collider_param)  # keep lists index-aligned
+            self.collider_aabbs.append(lambda box=box: box)
+            self.collider_labels.append("domain_walls")
+            self.grid_postprocess.append(collide)
+            self.modify_bc.append(None)
 
     # particle_v += force/particle_mass * dt
     # this is applied from start_dt, ends after num_dt p2g2p's
