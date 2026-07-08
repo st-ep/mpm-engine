@@ -9,6 +9,13 @@ that use them, so this package imports without the splats extra installed.
 from __future__ import annotations
 
 from .appearance import assign_filler_appearance, eval_sh
+from .export import (
+    FrameRecorder,
+    convert_to_sog,
+    cov6_to_scale_quat,
+    export_frame_ply,
+    rotate_sh,
+)
 from .fill import fill_interior, particle_volumes
 from .io import (
     GaussianCloud,
@@ -20,15 +27,20 @@ from .scene import SplatScene
 from .transforms import SimTransform, fit_to_grid
 
 __all__ = [
+    "FrameRecorder",
     "GaussianCloud",
     "SimTransform",
     "SplatScene",
     "assign_filler_appearance",
+    "convert_to_sog",
+    "cov6_to_scale_quat",
     "eval_sh",
+    "export_frame_ply",
     "fill_interior",
     "fit_to_grid",
     "load_gaussians_ply",
     "make_synthetic_cloud",
     "particle_volumes",
+    "rotate_sh",
     "save_gaussians_ply",
 ]

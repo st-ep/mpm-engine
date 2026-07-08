@@ -11,9 +11,17 @@ Run:  python examples/splat_sim.py
       python examples/splat_sim.py --material elastic --frames 30
       python examples/splat_sim.py --no-fill --device cpu
       python examples/splat_sim.py --ply path/to/point_cloud.ply --material sand
+      python examples/splat_sim.py --record-splats out/frames --sh-mode rotate --sog
 
 Outputs: out/splat_sim.mp4 (preview frames of the splat centers, colored by their SH color
-for a fixed camera and sized by covariance).
+for a fixed camera and sized by covariance). With --record-splats DIR it also writes
+frame_0000.ply, frame_0001.ply, ... plus a manifest.json.
+
+To view a recorded run in Cheng-Hsi's SplatViewer (github.com/chhsiao93/SplatViewer): copy
+one of its scenes/*.html pages, point the folder attribute at your DIR, set endFrame and
+fps, and open index.html. The viewer loads .ply directly, so --sog is only an
+optimization. Two panes that share a groupId share one frame clock, which gives the synced
+side-by-side comparison of truth against a recovered-law rollout.
 """
 from __future__ import annotations
 
@@ -26,7 +34,12 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import device_cli, write_mp4
 from warpmpm.materials import elastic, granular, newtonian
-from warpmpm.splats import load_gaussians_ply, make_synthetic_cloud
+from warpmpm.splats import (
+    FrameRecorder,
+    convert_to_sog,
+    load_gaussians_ply,
+    make_synthetic_cloud,
+)
 from warpmpm.splats.render import preview_frame
 from warpmpm.splats.scene import SplatScene
 
@@ -45,7 +58,7 @@ def _material(name: str):
 
 def run(material="dough", ply=None, fill=True, filler_appearance="inherit", filler_k=8,
         frames=40, grid_n=48, dt=2.0e-5, substeps=20, rasterize=False, device="auto",
-        out_name="splat_sim.mp4", render=True):
+        out_name="splat_sim.mp4", render=True, record_splats=None, sh_mode="dc", sog=False):
     from warpmpm.core.solver import GridConfig
 
     grid = GridConfig(n_grid=grid_n, grid_lim=0.4)
@@ -76,6 +89,10 @@ def run(material="dough", ply=None, fill=True, filler_appearance="inherit", fill
     v_desc = 0.5           # fixed, stable descent speed (m/s); stop clamps the depth
     tool = scene.solver.add_box((cx, cy, z_top), box_half, velocity=(0.0, 0.0, 0.0))
 
+    recorder = None
+    if record_splats is not None:
+        recorder = FrameRecorder(record_splats, sh_mode=sh_mode, fps=12)
+
     frame_dir = Path(tempfile.mkdtemp(prefix="splat_"))
     camera = None
     z_box = z_top
@@ -88,6 +105,8 @@ def run(material="dough", ply=None, fill=True, filler_appearance="inherit", fill
         v = scene.solver.v()
         vmax = float(np.sqrt((v * v).sum(1)).max())
         print(f"frame {f:3d}  max|v|={vmax:6.3f} m/s  fillers={n_filler}")
+        if recorder is not None:
+            recorder.capture(scene)
         if render:
             st = scene.state()
             if camera is None:
@@ -98,11 +117,20 @@ def run(material="dough", ply=None, fill=True, filler_appearance="inherit", fill
     if rasterize:
         _try_rasterize(scene)
 
+    splat_dir = None
+    if recorder is not None:
+        recorder.manifest()
+        splat_dir = str(recorder.out_dir)
+        print(f"recorded {recorder.count} splat frames to {splat_dir} (sh_mode={sh_mode})")
+        if sog:
+            convert_to_sog(recorder.out_dir)
+
     mp4 = None
     if render:
         mp4 = write_mp4(frame_dir, OUT / out_name, fps=12)
     return {"n_gaussians": scene.n_gaussians, "n_filler": n_filler,
-            "n_visible": scene.n_visible, "mp4": None if mp4 is None else str(mp4)}
+            "n_visible": scene.n_visible, "mp4": None if mp4 is None else str(mp4),
+            "splat_dir": splat_dir}
 
 
 def _fixed_camera(state, pad=1.4):
@@ -141,11 +169,18 @@ def main():
     parser.add_argument("--grid", type=int, default=48)
     parser.add_argument("--rasterize", action="store_true",
                         help="use rasterize_inria when diff_gaussian_rasterization is importable")
+    parser.add_argument("--record-splats", default=None,
+                        help="write frame_XXXX.ply + manifest.json to this folder for SplatViewer")
+    parser.add_argument("--sh-mode", default="dc", choices=("dc", "rotate"),
+                        help="dc bakes the DC color; rotate turns SH into the deformed body frame")
+    parser.add_argument("--sog", action="store_true",
+                        help="convert recorded frames to .sog with the PlayCanvas CLI")
     args = parser.parse_args()
     run(material=args.material, ply=args.ply, fill=args.fill,
         filler_appearance=args.filler_appearance, filler_k=args.filler_k,
         frames=args.frames, grid_n=args.grid, rasterize=args.rasterize,
-        device=args.device, render=not args.no_render)
+        device=args.device, render=not args.no_render,
+        record_splats=args.record_splats, sh_mode=args.sh_mode, sog=args.sog)
 
 
 if __name__ == "__main__":

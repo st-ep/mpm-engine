@@ -8,6 +8,7 @@ so ``import warpmpm.splats`` works without the splats extra installed.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -78,8 +79,12 @@ def _logit(p: np.ndarray) -> np.ndarray:
     return np.log(p / (1.0 - p))
 
 
-def load_gaussians_ply(path, sh_degree: int = 3) -> GaussianCloud:
-    """Load an INRIA-layout Gaussian-splat PLY into a GaussianCloud (world units)."""
+def load_gaussians_ply(path, sh_degree: int | None = None) -> GaussianCloud:
+    """Load an INRIA-layout Gaussian-splat PLY into a GaussianCloud (world units).
+
+    sh_degree None (the default) infers the degree from the f_rest_* fields present,
+    so DC-only files (for example sh_mode="dc" exports) load without arguments. An
+    explicit sh_degree must not exceed what the file carries."""
     from plyfile import PlyData
 
     ply = PlyData.read(str(path))
@@ -88,15 +93,23 @@ def load_gaussians_ply(path, sh_degree: int = 3) -> GaussianCloud:
     pos = np.stack([v["x"], v["y"], v["z"]], axis=1).astype(np.float32)
     opacity = _sigmoid(np.asarray(v["opacity"], dtype=np.float64)).astype(np.float32)[:, None]
 
+    fields = {p.name for p in v.properties}
+    n_rest_file = sum(1 for f in fields if f.startswith("f_rest_"))
+    degree_file = math.isqrt(n_rest_file // 3 + 1) - 1
+    if sh_degree is None:
+        sh_degree = degree_file
+    elif sh_degree > degree_file:
+        raise ValueError(f"file carries SH degree {degree_file}, requested {sh_degree}")
     kdim = (sh_degree + 1) ** 2
     sh = np.zeros((n, kdim, 3), dtype=np.float32)
     sh[:, 0, :] = np.stack([v["f_dc_0"], v["f_dc_1"], v["f_dc_2"]], axis=1)
-    n_rest = 3 * (kdim - 1)
-    if n_rest > 0:
-        rest = np.stack([np.asarray(v[f"f_rest_{i}"]) for i in range(n_rest)], axis=1)
-        # channel-major (N, 3, K-1) -> (N, K-1, 3)
-        rest = rest.reshape(n, 3, kdim - 1).transpose(0, 2, 1)
-        sh[:, 1:, :] = rest
+    if kdim > 1:
+        # the file's channel-major layout spans its own band count, so reshape with the
+        # file's K and truncate bands afterwards
+        kf = (degree_file + 1) ** 2
+        rest = np.stack([np.asarray(v[f"f_rest_{i}"]) for i in range(n_rest_file)], axis=1)
+        rest = rest.reshape(n, 3, kf - 1).transpose(0, 2, 1)
+        sh[:, 1:, :] = rest[:, : kdim - 1, :]
 
     scales = np.exp(np.stack([v["scale_0"], v["scale_1"], v["scale_2"]], axis=1)).astype(
         np.float32)
