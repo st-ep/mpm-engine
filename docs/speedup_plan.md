@@ -201,6 +201,38 @@ design notes in docs/claymore_notes.md. Only the 2018 GPUMPM repo is GPL (design
 Sequencing vs Step 4 (implicit projection): Step 4 cuts substep COUNT ~25x and
 outranks both; 5a is cheap enough to land first if it clears its gates.
 
+STATUS (overnight session, July 2026; GPU numbers pending Vista):
+- FUSED G2P2G LANDED (Solver(fused=True), pour_franka --fused): interior substeps
+  run one particle pass instead of three (S+1 passes per S-substep tick vs 3S).
+  BITWISE-equal to the normal pipeline on CPU across newtonian/elastic/von-Mises
+  + moving cup + wrench (tests/test_fused_pipeline.py); pour metrics
+  byte-identical. The split zero (m+v_in before the fused pass, v_out after) is
+  what preserves bitwise equality; see g2p_stress_p2g docstring. CPU wall clock
+  ~7 percent (arithmetic-bound single-thread); the target is GPU bandwidth
+  (3x fewer particle-array round-trips) and launch count.
+- 5a BLOCK SORT LANDED (Solver(sort_interval=K)): stable block-key argsort at the
+  guard readback, gather through scratch, copy back in place (pointer contract);
+  all 18 particle arrays moved with a runtime completeness assert; host _vol0
+  permuted alongside. Exact-multiset + tolerance-dynamics + pointer tests
+  (tests/test_particle_sort.py). OFF by default: index identity changes at sort
+  ticks, so trajectory-paired dumps must not enable it.
+- AoSoA VERDICT: not implemented as a layout change. After a block sort, the SoA
+  arrays are block-contiguous, which already restores the intra-warp coalescing
+  that claymore's AoSoA bins provide; the remaining delta (per-bin channel
+  interleaving) pays off only together with the shared-memory arena kernel (5b),
+  which needs CUDA-native code (warp tiles or native snippets) and cannot be
+  validated on this Mac. Take 5b + AoSoA together as one CUDA follow-up if the
+  GPU numbers for fused+sort leave P2G dominant.
+- BC side quests landed the same night: mass-gate early-out in every collide
+  kernel (exact; BC 1.25 -> 0.24 ms/substep on GPU at 192^3) and domain walls as
+  six face shells instead of a full-grid launch (walls 1.84 -> 0.42 ms CPU).
+GPU commands for the morning (after git push from an interactive shell):
+  pytest tests/ -v                                        # incl. fused + sort tests on cuda:0
+  python examples/pour_franka.py --skip-video --frames 120                 # new baseline
+  python examples/pour_franka.py --skip-video --frames 120 --fused        # the fusion A/B
+  python examples/pour_franka.py --skip-video --frames 120 --fused --sort-interval 8
+  python examples/pour_franka.py --skip-video --frames 60 --fused --profile # per-phase shares
+
 ## Regime coverage: which solver for which scene
 
 The implicit umbrella is three related solvers sharing grid DOFs, SDF-as-Dirichlet

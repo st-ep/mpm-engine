@@ -240,14 +240,15 @@ def render_recording(n_grid: int, workers: int = 0, render_max: int = RENDER_MAX
 
 
 def build_scene(device: str, n_grid: int, arm: PandaPour, sparse: bool = False,
-                fused: bool = False):
+                fused: bool = False, sort_interval: int = 0):
     grid = GridConfig(n_grid=n_grid, grid_lim=GRID_LIM)
     h = grid.dx / 2
     cup_pos0, cup_quat0 = arm.cup_pose_at(0.0)
     pos_local, vol = cup_fill(PROFILE, h, fill_fraction=FILL_FRACTION)
     pos = (cup_pos0 + pos_local @ quat_to_mat(cup_quat0).T + WORLD_TO_MPM).astype(np.float32)
 
-    s = Solver(grid=grid, device=device, sparse=sparse, fused=fused).load_particles(pos, vol)
+    s = Solver(grid=grid, device=device, sparse=sparse, fused=fused,
+               sort_interval=sort_interval).load_particles(pos, vol)
     s.set_material(newtonian(**HONEY))
     s.add_plane((0, 0, WORLD_TO_MPM[2]), (0, 0, 1), "separate", friction=0.3)
     s.add_domain_walls()
@@ -309,11 +310,13 @@ def run(device: str = "auto", n_grid: int = 192, video: bool = True,
         record: bool = False, rebake: bool = False, render_stride: int = 1,
         frames: int | None = None, render_workers: int = 0,
         render_max: int = RENDER_MAX, sparse: bool = False,
-        fused: bool = False, profile: bool = False) -> dict:
+        fused: bool = False, sort_interval: int = 0,
+        profile: bool = False) -> dict:
     OUT.mkdir(parents=True, exist_ok=True)
     arm = make_arm(write_glass_obj(PROFILE, OUT / "glass_render.obj"))
 
-    s, grid, src, rcv, vol = build_scene(device, n_grid, arm, sparse=sparse, fused=fused)
+    s, grid, src, rcv, vol = build_scene(device, n_grid, arm, sparse=sparse,
+                                         fused=fused, sort_interval=sort_interval)
     s.profile = profile
     h = grid.dx / 2
     n0 = s.n_particles
@@ -551,6 +554,9 @@ if __name__ == "__main__":
     ap.add_argument("--fused", action="store_true",
                     help="claymore-fused particle pass (one g2p+stress+p2g kernel per "
                          "interior substep; bitwise-equal to the normal pipeline)")
+    ap.add_argument("--sort-interval", type=int, default=0,
+                    help="re-sort particles by grid block every K frames (0 = off; "
+                         "GPU locality; changes particle index identity at sort ticks)")
     ap.add_argument("--profile", action="store_true",
                     help="per-phase substep timing table (forces live launches + a device "
                          "sync per phase, so the run is slower; the shares are the signal)")
@@ -563,4 +569,5 @@ if __name__ == "__main__":
             video=not args.skip_video and not args.record, record=args.record,
             rebake=args.rebake, frames=args.frames,
             render_workers=args.render_workers, render_max=args.render_max,
-            sparse=args.sparse, fused=args.fused, profile=args.profile)
+            sparse=args.sparse, fused=args.fused,
+            sort_interval=args.sort_interval, profile=args.profile)
