@@ -994,6 +994,35 @@ def zero_grid_vout(state: MPMStateStruct, model: MPMModelStruct, lo: wp.vec3i):
     state.grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(0.0, 0.0, 0.0)
 
 
+# gather kernels for the block sort (claymore 5a): dst[i] = src[perm[i]]
+@wp.kernel
+def gather_vec3(src: wp.array(dtype=wp.vec3), perm: wp.array(dtype=int),
+                dst: wp.array(dtype=wp.vec3)):
+    i = wp.tid()
+    dst[i] = src[perm[i]]
+
+
+@wp.kernel
+def gather_mat33(src: wp.array(dtype=wp.mat33), perm: wp.array(dtype=int),
+                 dst: wp.array(dtype=wp.mat33)):
+    i = wp.tid()
+    dst[i] = src[perm[i]]
+
+
+@wp.kernel
+def gather_float(src: wp.array(dtype=float), perm: wp.array(dtype=int),
+                 dst: wp.array(dtype=float)):
+    i = wp.tid()
+    dst[i] = src[perm[i]]
+
+
+@wp.kernel
+def gather_int(src: wp.array(dtype=int), perm: wp.array(dtype=int),
+               dst: wp.array(dtype=int)):
+    i = wp.tid()
+    dst[i] = src[perm[i]]
+
+
 @wp.kernel
 def compute_cov_from_F(state: MPMStateStruct, model: MPMModelStruct):
     p = wp.tid()

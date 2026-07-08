@@ -1250,6 +1250,69 @@ class MPM_Simulator_WARP:
                       inputs=[self.mpm_state, self.mpm_model, dt],
                       device=device)
 
+    def permute_particles(self, perm, device="cuda:0"):
+        """Reorder EVERY per-particle array by `perm` (a permutation of range(n)),
+        claymore-style block sorting (5a in docs/claymore_notes.md): after sorting by
+        grid block, neighboring threads scatter to neighboring grid nodes, which is
+        what restores P2G atomic locality and G2P gather coalescing on GPU. Gathers
+        into scratch and copies back IN PLACE so array pointers stay stable (the
+        captured-graph contract). A runtime guard asserts no particle_* array was
+        missed, so adding a field without updating this method fails loudly.
+        NOTE: particle index identity changes; dumps that pair frames by index must
+        not sort mid-run (Solver.sort_interval stays 0 for those)."""
+        n = self.n_particles
+        perm = np.asarray(perm)
+        assert perm.shape == (n,)
+        st = self.mpm_state
+        vec3_arrays = [st.particle_x, st.particle_v, st.particle_x_ref]
+        mat33_arrays = [st.particle_F, st.particle_F_trial, st.particle_R,
+                        st.particle_stress, st.particle_C, st.particle_L]
+        float_arrays = [st.particle_vol, st.particle_mass, st.particle_density,
+                        st.particle_Jp]
+        float6_arrays = [st.particle_init_cov, st.particle_cov]
+        int_arrays = [st.particle_selection, st.particle_material, st.particle_rigid_id]
+        listed = {id(a) for a in (vec3_arrays + mat33_arrays + float_arrays
+                                  + float6_arrays + int_arrays)}
+        for name in dir(st):
+            if name.startswith("particle_") and isinstance(getattr(st, name), wp.array):
+                assert id(getattr(st, name)) in listed, \
+                    f"permute_particles is missing state array {name}"
+
+        perm_d = wp.array(perm.astype(np.int32), dtype=int, device=device)
+        perm6 = (perm.astype(np.int64)[:, None] * 6
+                 + np.arange(6, dtype=np.int64)[None, :]).reshape(-1)
+        perm6_d = wp.array(perm6.astype(np.int32), dtype=int, device=device)
+        if getattr(self, "_perm_scratch", None) is None or \
+                self._perm_scratch["n"] != n:
+            self._perm_scratch = {
+                "n": n,
+                "vec3": wp.zeros(shape=n, dtype=wp.vec3, device=device),
+                "mat33": wp.zeros(shape=n, dtype=wp.mat33, device=device),
+                "float": wp.zeros(shape=6 * n, dtype=float, device=device),
+                "int": wp.zeros(shape=n, dtype=int, device=device),
+            }
+        sc = self._perm_scratch
+        for arr in vec3_arrays:
+            wp.launch(kernel=gather_vec3, dim=n, inputs=[arr, perm_d, sc["vec3"]],
+                      device=device)
+            wp.copy(arr, sc["vec3"], count=n)
+        for arr in mat33_arrays:
+            wp.launch(kernel=gather_mat33, dim=n, inputs=[arr, perm_d, sc["mat33"]],
+                      device=device)
+            wp.copy(arr, sc["mat33"], count=n)
+        for arr in float_arrays:
+            wp.launch(kernel=gather_float, dim=n, inputs=[arr, perm_d, sc["float"]],
+                      device=device)
+            wp.copy(arr, sc["float"], count=n)
+        for arr in float6_arrays:
+            wp.launch(kernel=gather_float, dim=6 * n,
+                      inputs=[arr, perm6_d, sc["float"]], device=device)
+            wp.copy(arr, sc["float"], count=6 * n)
+        for arr in int_arrays:
+            wp.launch(kernel=gather_int, dim=n, inputs=[arr, perm_d, sc["int"]],
+                      device=device)
+            wp.copy(arr, sc["int"], count=n)
+
     # set particle densities to all_particle_densities,
     def reset_densities_and_update_masses(self, all_particle_densities, device = "cuda:0"):
         src = torch2warp_float(all_particle_densities.detach(), dvc=device)

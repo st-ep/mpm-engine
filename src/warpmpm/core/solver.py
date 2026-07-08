@@ -60,6 +60,12 @@ class Solver:
     # Falls back silently when the tick uses features the fused path excludes
     # (rigid bodies, particle modifiers, sparse mode).
     fused: bool = False
+    # claymore-style block sort (5a): every `sort_interval` ticks, reorder particles by
+    # their 4^3 grid block so P2G atomics from neighboring threads hit neighboring
+    # nodes and G2P gathers coalesce (the locality AoSoA buys, in SoA layout). 0 = off.
+    # WARNING: particle index identity changes at sort ticks; keep 0 for runs whose
+    # dumps pair frames by particle index (trajectory-based identification).
+    sort_interval: int = 0
     # per-phase substep profiling: syncs the device around every kernel phase and
     # accumulates timings (zero/stress/p2g/grid_update/BC/g2p). Forces live launches
     # (a captured graph cannot be timed per phase), so a profiled run is slower;
@@ -253,6 +259,8 @@ class Solver:
     def step(self, dt: float, substeps: int = 1) -> Solver:
         if self._tick % max(1, self.guard_interval) == 0:
             self._update_grid_box(dt, substeps)
+        if self.sort_interval and self._tick % self.sort_interval == 0:
+            self._sort_particles()
         if self.sparse:
             self._sim.rebuild_active_blocks(self.device)
         self._sim.profile = self.profile
@@ -269,6 +277,21 @@ class Solver:
                 self._sim.p2g2p(self._step, dt, device=self.device)
                 self._step += 1
         return self
+
+    def _sort_particles(self) -> bool:
+        """Block-key sort (stable): key = lexicographic 4^3-block index of the stencil
+        base. Skips the permutation when already ordered (particles move well under a
+        cell per tick, so most sort ticks after the first are no-ops)."""
+        x = self.x()
+        base = (np.floor(x / self.grid.dx - 0.5).astype(np.int64)) >> 2
+        nb = (self.grid.n_grid >> 2) + 2
+        keys = (base[:, 0] * nb + base[:, 1]) * nb + base[:, 2]
+        if np.all(np.diff(keys) >= 0):
+            return False
+        perm = np.argsort(keys, kind="stable")
+        self._sim.permute_particles(perm, device=self.device)
+        self._vol0 = self._vol0[perm]  # host-side pair of the device arrays
+        return True
 
     def profile_report(self) -> str:
         """Aggregate the per-phase timings collected while profile=True into a table
