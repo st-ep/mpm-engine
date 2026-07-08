@@ -295,6 +295,7 @@ class MPM_Simulator_WARP:
         # collider has no box (full-grid fallback). restrict_bc=False disables restriction
         # (used by the equivalence test).
         self.collider_aabbs = []
+        self.collider_labels = []  # short names for the per-collider profile rows
         self.restrict_bc = True
         # live particle grid box for the zero/normalize/damping sweeps, set per control
         # tick by the wrapper (core.Solver.step); None = full grid. Zeroing runs over the
@@ -1046,26 +1047,29 @@ class MPM_Simulator_WARP:
                         device=device,
                     )
 
-        # apply BC on grid
-        with wp.ScopedTimer(
-            "apply_BC_on_grid", synchronize=self.profile, active=self.profile, print=False, dict=self.time_profile
-        ):
-            for k in range(len(self.grid_postprocess)):
-                # restrict the launch to the collider's current grid box when it has one;
-                # a None box means the collider is outside the domain (skip the launch but
-                # still integrate its pose below)
-                lo_v = wp.vec3i(0, 0, 0)
-                dims = grid_size
-                skip = False
-                fn = self.collider_aabbs[k] if k < len(self.collider_aabbs) else None
-                if self.restrict_bc and fn is not None:
-                    box = fn()
-                    if box is None:
-                        skip = True
-                    else:
-                        lo_v = wp.vec3i(int(box[0][0]), int(box[0][1]), int(box[0][2]))
-                        dims = box[1]
-                if not skip:
+        # apply BC on grid (profiled per collider: BC[k]:<struct> rows in time_profile)
+        for k in range(len(self.grid_postprocess)):
+            # restrict the launch to the collider's current grid box when it has one;
+            # a None box means the collider is outside the domain (skip the launch but
+            # still integrate its pose below)
+            lo_v = wp.vec3i(0, 0, 0)
+            dims = grid_size
+            skip = False
+            fn = self.collider_aabbs[k] if k < len(self.collider_aabbs) else None
+            if self.restrict_bc and fn is not None:
+                box = fn()
+                if box is None:
+                    skip = True
+                else:
+                    lo_v = wp.vec3i(int(box[0][0]), int(box[0][1]), int(box[0][2]))
+                    dims = box[1]
+            if not skip:
+                with wp.ScopedTimer(
+                    "BC[%d]:%s" % (k, self.collider_labels[k]
+                                 if k < len(self.collider_labels) else "?"),
+                    synchronize=self.profile, active=self.profile, print=False,
+                    dict=self.time_profile,
+                ):
                     wp.launch(
                         kernel=self.grid_postprocess[k],
                         dim=dims,
@@ -1079,8 +1083,8 @@ class MPM_Simulator_WARP:
                         ],
                         device=device,
                     )
-                if self.modify_bc[k] is not None:
-                    self.modify_bc[k](self.time, dt, self.collider_params[k])
+            if self.modify_bc[k] is not None:
+                self.modify_bc[k](self.time, dt, self.collider_params[k])
 
         # g2p
         with wp.ScopedTimer(
@@ -1526,8 +1530,11 @@ class MPM_Simulator_WARP:
                 return self._grid_box(lo_w, hi_w, halo=1)
 
             self.collider_aabbs.append(plane_aabb)
+            self.collider_labels.append("plane")
         else:
             self.collider_aabbs.append(None)
+
+            self.collider_labels.append("plane_free")
         self.grid_postprocess.append(collide)
         self.modify_bc.append(None)
 
@@ -1615,6 +1622,7 @@ class MPM_Simulator_WARP:
                                   (p[0] + s[0], p[1] + s[1], p[2] + s[2]), halo=1)
 
         self.collider_aabbs.append(box_aabb)
+        self.collider_labels.append("cuboid_velocity")
         self.grid_postprocess.append(collide)
         self.modify_bc.append(modify)
 
@@ -1776,6 +1784,7 @@ class MPM_Simulator_WARP:
                                   (c[0] + r, c[1] + r, c[2] + r), halo=1)
 
         self.collider_aabbs.append(cup_aabb)
+        self.collider_labels.append("revolved_cup")
         self.grid_postprocess.append(collide)
         self.modify_bc.append(modify)
         return idx
@@ -1870,6 +1879,7 @@ class MPM_Simulator_WARP:
                     )
 
         self.collider_aabbs.append(None)   # boundary shells: full-grid fallback
+        self.collider_labels.append("domain_walls")
         self.grid_postprocess.append(collide)
         self.modify_bc.append(None)
 
@@ -2105,6 +2115,7 @@ class MPM_Simulator_WARP:
         else:
             _pc_box = None
         self.collider_aabbs.append(lambda box=_pc_box: box)
+        self.collider_labels.append("pointcloud")
         self.grid_postprocess.append(collide)
         self.modify_bc.append(None)
 
@@ -2264,6 +2275,7 @@ class MPM_Simulator_WARP:
             return self._grid_box(pts.min(axis=0), pts.max(axis=0), halo=1)
 
         self.collider_aabbs.append(sdf_aabb)
+        self.collider_labels.append("mesh_sdf")
         self.grid_postprocess.append(collide)
         self.modify_bc.append(modify)
         return len(self.collider_params) - 1

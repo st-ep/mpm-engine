@@ -59,9 +59,10 @@ from warpmpm.adapters.mujoco_adapter import PandaPour
 from warpmpm.colliders.glass import (
     angular_velocity_between,
     cavity_mask,
+    glass_sdf_local,
     project_out_of_solid,
     quat_to_mat,
-    solid_mask,
+    world_to_local,
     write_glass_obj,
 )
 
@@ -283,6 +284,26 @@ def level_volume(x_world, pos, quat, h: float) -> float:
     return PROFILE.cavity_volume(depth)
 
 
+def glass_audit(x_mpm, pos_world, quat, h: float):
+    """Fused per-glass audit: ONE world_to_local transform yields the solid (leak)
+    count, the cavity mask, and the apparent level volume. Replaces four separate
+    transform sweeps (solid_mask + cavity_mask + level_volume's two) that dominated
+    the per-frame host time at 340k particles. Semantics identical to the originals."""
+    local = world_to_local(x_mpm, np.asarray(pos_world) + WORLD_TO_MPM, quat)
+    n_solid = int((glass_sdf_local(local, PROFILE) < 0.0).sum())
+    r_xy = np.hypot(local[:, 0], local[:, 1])
+    z = local[:, 2]
+    cav = ((r_xy < PROFILE.inner_radius_at_z(z) + 0.75 * h)
+           & (z >= PROFILE.inner_floor_z - 1e-3)
+           & (z <= PROFILE.rim_z))
+    if int(cav.sum()) < 50:
+        vol = 0.0
+    else:
+        depth = float(np.quantile(z[cav], 0.97) - PROFILE.inner_floor_z) + 0.5 * h
+        vol = PROFILE.cavity_volume(depth)
+    return n_solid, cav, vol
+
+
 def run(device: str = "auto", n_grid: int = 192, video: bool = True,
         record: bool = False, rebake: bool = False, render_stride: int = 1,
         frames: int | None = None, render_workers: int = 0,
@@ -371,8 +392,8 @@ def run(device: str = "auto", n_grid: int = 192, video: bool = True,
         # ---- leak audit + rescue net (counts reported; grid BC should keep this ~0) ----
         x = s.x()
         v = s.v()
-        ns_src = int(solid_mask(x, p_now + WORLD_TO_MPM, q_now, PROFILE).sum())
-        ns_rcv = int(solid_mask(x, RECEIVER_POS + WORLD_TO_MPM, Q_ID, PROFILE).sum())
+        ns_src, cav_src, vol_src = glass_audit(x, p_now, q_now, h)
+        ns_rcv, cav_rcv, vol_rcv = glass_audit(x, RECEIVER_POS, Q_ID, h)
         max_embedded = max(max_embedded, ns_src + ns_rcv)
         if ns_src or ns_rcv:
             x, v, n1 = project_out_of_solid(x, v, p_now + WORLD_TO_MPM, q_now, PROFILE,
@@ -383,13 +404,13 @@ def run(device: str = "auto", n_grid: int = 192, video: bool = True,
             proj_total += n1 + n2
             s.set_x(x)
             s.set_v(v)
+            # rare path: re-account on the projected positions (matches the old code,
+            # which masked after the rescue moved embedded particles out of the walls)
+            _, cav_src, vol_src = glass_audit(x, p_now, q_now, h)
+            _, cav_rcv, vol_rcv = glass_audit(x, RECEIVER_POS, Q_ID, h)
 
-        in_src = int(cavity_mask(x, p_now + WORLD_TO_MPM, q_now, PROFILE, pad=0.75 * h).sum())
-        in_rcv = int(cavity_mask(x, RECEIVER_POS + WORLD_TO_MPM, Q_ID, PROFILE,
-                                 pad=0.75 * h).sum())
-        x_world = x - WORLD_TO_MPM
-        vol_src = level_volume(x_world, p_now, q_now, h)
-        vol_rcv = level_volume(x_world, RECEIVER_POS, Q_ID, h)
+        in_src = int(cav_src.sum())
+        in_rcv = int(cav_rcv.sum())
         tilt = arm.tilt_degrees(q_now)
         rows.append(dict(
             frame=frame, t=round(t_now, 5), tilt_deg=round(tilt, 2), n_src=in_src,
