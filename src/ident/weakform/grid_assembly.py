@@ -1,10 +1,11 @@
 """Grid-consistent (Bubnov-Galerkin) weak-form assembly on the MPM grid basis.
 
-The EUCLID lesson (docs/identification_notes.md): the discrete weak residual is
-unbiased only when the test functions live in the SAME discrete space the
-forward solver uses and the internal force is assembled with the SAME gradient
-operator. For warp-mpm that space is the quadratic B-spline GRID basis N_i used
-in P2G/G2P, not independent analytic bump functions sampled at particles.
+The discrete weak residual is unbiased only when the test functions live in the
+same discrete space the forward solver uses and the internal force is assembled
+with the same gradient operator (docs/MATH_REFERENCE.md Section 2.5, following
+EUCLID). For warp-mpm that space is the quadratic B-spline grid basis N_i used
+in P2G/G2P; independent analytic bump functions sampled at particles carry a
+patch-scale bias on this data.
 
 This assembles the per-grid-node, per-direction momentum residual using the MPM
 B-spline weights and gradients (reconstructed exactly from the dump's particle

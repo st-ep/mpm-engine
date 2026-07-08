@@ -310,7 +310,7 @@ class MPM_Simulator_WARP:
         # synchronize implicitly). profile=True restores the synced timers and fills
         # time_profile; default off so the GPU pipeline never stalls for a stopwatch.
         self.profile = False
-        # CUDA graph capture of the fixed-shape substep segments (speedup_plan Step 3):
+        # CUDA graph capture of the fixed-shape substep segments (docs/performance.md):
         # zero->stress->p2g->normalize(+damping) and g2p replay as two graphs; the BC
         # launches and host-side pose integration stay live between them. CUDA only;
         # the first substep runs live so modules JIT-load before capture; any capture
@@ -852,9 +852,9 @@ class MPM_Simulator_WARP:
         return self._blk["cur_n"] / float(bd[0] * bd[1] * bd[2])
 
     def _capture_substep_graphs(self, dt, device, grid_size):
-        """CUDA-graph capture of the fixed-shape substep segments (speedup_plan Step 3).
+        """CUDA-graph capture of the fixed-shape substep segments (docs/performance.md).
         Segment A: zero -> stress -> p2g -> normalize (+ damping when enabled); segment
-        B: g2p. Captured at FULL grid dims so the graph shape never changes (the particle
+        B: g2p. Captured at full grid dims so the graph shape never changes (the particle
         box restriction stays a CPU optimization; dense sweeps are cheap on GPU). The BC
         launches and host-side pose integration stay live between the two graphs because
         their inputs (time, poses, restricted dims) change per substep."""
@@ -1160,16 +1160,16 @@ class MPM_Simulator_WARP:
         self.time = self.time + dt
 
     def p2g2p_fused_tick(self, dt, substeps, device="cuda:0"):
-        """Claymore-fused control tick (Wang et al. TOG 2020, MIT; docs/claymore_notes.md):
-        the interior substeps run ONE fused particle pass (g2p_stress_p2g) instead of the
+        """Claymore-fused control tick (Wang et al. TOG 2020, MIT; docs/performance.md):
+        the interior substeps run one fused particle pass (g2p_stress_p2g) instead of the
         three separate stress/p2g/g2p passes, so a tick costs S+1 particle passes instead
         of 3S. The grid double buffer makes this safe: the fused gather reads grid_v_out
         (state n) while scattering into the freshly zeroed grid_v_in/grid_m (state n+1).
-        The split zero is load-bearing for bitwise equality with p2g2p: grid_m/grid_v_in
-        clear BEFORE the fused pass, grid_v_out clears AFTER it (normalization skips
-        nodes with mass <= 1e-15, which must then read exactly zero in the next gather).
-        Caller (Solver.step) guarantees: no pre-p2g ops, no velocity modifiers, no rigid
-        bodies, sparse mode off. Runs live (no CUDA graph capture in v1)."""
+        Bitwise equality with p2g2p depends on the split zero: grid_m/grid_v_in clear
+        before the fused pass and grid_v_out clears after it, because normalization
+        skips nodes with mass <= 1e-15 and those nodes must read exactly zero in the
+        next gather. Caller (Solver.step) guarantees: no pre-p2g ops, no velocity
+        modifiers, no rigid bodies, sparse mode off. Runs live (no CUDA graph capture)."""
         grid_size = (
             self.mpm_model.grid_dim_x,
             self.mpm_model.grid_dim_y,
@@ -1262,14 +1262,14 @@ class MPM_Simulator_WARP:
                       device=device)
 
     def permute_particles(self, perm, device="cuda:0"):
-        """Reorder EVERY per-particle array by `perm` (a permutation of range(n)),
-        claymore-style block sorting (5a in docs/claymore_notes.md): after sorting by
+        """Reorder every per-particle array by `perm` (a permutation of range(n)),
+        claymore-style block sorting (docs/performance.md): after sorting by
         grid block, neighboring threads scatter to neighboring grid nodes, which is
         what restores P2G atomic locality and G2P gather coalescing on GPU. Gathers
-        into scratch and copies back IN PLACE so array pointers stay stable (the
+        into scratch and copies back in place so array pointers stay stable (the
         captured-graph contract). A runtime guard asserts no particle_* array was
         missed, so adding a field without updating this method fails loudly.
-        NOTE: particle index identity changes; dumps that pair frames by index must
+        Particle index identity changes here; dumps that pair frames by index must
         not sort mid-run (Solver.sort_interval stays 0 for those)."""
         n = self.n_particles
         perm = np.asarray(perm)

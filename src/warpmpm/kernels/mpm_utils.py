@@ -316,7 +316,7 @@ def mu_i_return_mapping(
     # surface tau_bar = mu(I) p with I = gamma_dot_p d sqrt(rho_s / p).
     # The return is deviatoric (non dilatant): J and the pressure are
     # preserved, so the dumped Cauchy stress trace equals the pressure the
-    # update consumed. See docs/simulator_notes.md.
+    # update consumed.
     U = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     V = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     sig = wp.vec3(0.0)
@@ -953,10 +953,10 @@ def compute_stress_from_F_trial(
 @wp.kernel
 def g2p_stress_p2g(state: MPMStateStruct, model: MPMModelStruct, dt: float):
     """Claymore-style fused particle pass (Wang et al., ACM TOG 2020, MIT; see
-    docs/claymore_notes.md and AUTHORS.md): gather from grid state n (grid_v_out),
+    docs/performance.md and AUTHORS.md): gather from grid state n (grid_v_out),
     advect and update F_trial, return-map to stress, and scatter substep n+1's
-    momentum/mass into the freshly zeroed grid_v_in/grid_m -- one read and one write
-    of the particle arrays per substep instead of three passes. Reads (grid_v_out)
+    momentum/mass into the freshly zeroed grid_v_in/grid_m. The particle arrays
+    are read and written once per substep instead of three times. Reads (grid_v_out)
     and writes (grid_v_in, grid_m) are disjoint arrays, and all three stages for a
     particle touch only that particle's state, so per-particle arithmetic order is
     identical to the separate kernels (bitwise on CPU). Gating mirrors the originals:
@@ -1281,7 +1281,7 @@ def rigid_particle_update(
         state.particle_F[p] = wp.mat33(1.0, 0.0, 0.0,  0.0, 1.0, 0.0,  0.0, 0.0, 1.0)
 
 
-# ---- active-block sparse compute (speedup_plan: two-level block sparsity) ----------
+# ---- active-block sparse compute (docs/performance.md): two-level block sparsity ---
 # 4^3 node blocks. Per control tick: mark the block of each particle's stencil base,
 # dilate by one block in every direction (covers the quadratic B-spline stencil
 # crossing block faces and intra-tick particle motion), and compact into an active

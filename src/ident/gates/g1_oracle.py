@@ -177,8 +177,8 @@ def run_gate(
     # EUCLID lesson: test functions in the simulator's own discrete (grid
     # B-spline) space with its grad-N operator remove the operator-mismatch
     # bias that independent analytic bump functions sampled at particles incur
-    # (docs/identification_notes.md). The bump-based system is retained only as
-    # the momentum-closure diagnostic above.
+    # (docs/MATH_REFERENCE.md Section 2.5). The bump-based system is retained
+    # only as the momentum-closure diagnostic above.
     gs = assemble_grid_consistent(dump, dic, bundle.eps_gamma,
                                   flow_frac_min=FLOW_FRAC_MIN,
                                   gate_clearance_time=0.0)

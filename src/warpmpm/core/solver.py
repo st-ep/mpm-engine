@@ -54,14 +54,15 @@ class Solver:
     # occupied region is not box-shaped (separated bodies, spread fluid, large empty
     # domains). Storage stays dense; takes precedence over the CUDA-graph fast path.
     sparse: bool = False
-    # claymore-style fused particle pass (docs/claymore_notes.md): interior substeps of
-    # a tick run ONE g2p+stress+p2g kernel instead of three particle passes (S+1 passes
-    # per S substeps instead of 3S). DEFAULT: bitwise-equal to the three-pass pipeline
-    # (verified across material families incl. wrench readout) and faster everywhere
-    # measured (13% on the 192^3 GPU pour, ~4% CPU). Falls back silently per tick when
-    # the scene uses features the fused path excludes (rigid bodies, particle
-    # modifiers, sparse mode). fused=False restores the three-pass pipeline, which is
-    # also the only path with CUDA graph capture (graphs only pay on small scenes).
+    # claymore-style fused particle pass (docs/performance.md): interior substeps of
+    # a tick run one g2p+stress+p2g kernel instead of three particle passes (S+1 passes
+    # per S substeps instead of 3S). Default because it is bitwise-equal to the
+    # three-pass pipeline (verified across material families incl. wrench readout) and
+    # faster everywhere measured (13% on the 192^3 GPU pour, ~4% CPU). Falls back
+    # silently per tick when the scene uses features the fused path excludes (rigid
+    # bodies, particle modifiers, sparse mode). fused=False restores the three-pass
+    # pipeline, which is also the only path with CUDA graph capture (graphs only pay
+    # on small scenes).
     fused: bool = True
     # claymore-style block sort (5a): every `sort_interval` ticks, reorder particles by
     # their 4^3 grid block so P2G atomics from neighboring threads hit neighboring
