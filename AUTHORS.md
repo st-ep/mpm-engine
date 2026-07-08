@@ -54,3 +54,31 @@ Layered onto the upstream solver by our group (from git authorship):
 
 Everything outside `kernels/` (the `Solver` wrapper, `Material` factory, `coupling/` backend,
 `adapters/` MuJoCo, scenes, examples, tests) is group-authored.
+## Borrowed transfer-kernel design: claymore (MIT)
+
+The Step 5 transfer-pipeline optimizations (the fused G2P2G particle pass, per-block
+particle binning/sorting, and the shared-memory arena design earmarked for the CUDA
+follow-up) port the architecture of **claymore**, read from Justin Bonus's fork
+(github.com/JustinBonus/claymore, ClaymoreUW lineage: multi-architecture builds and
+the OSU wave-flume/debris engineering projects). Claymore is MIT-licensed; design and
+any adapted fragments are used with citation:
+
+```bibtex
+@article{wang2020massively,
+  author  = {Wang, Xinlei and Qiu, Yuxing and Slattery, Stuart R. and Fang, Yu
+             and Li, Minchen and Zhu, Song-Chun and Zhu, Yixin and Tang, Min
+             and Manocha, Dinesh and Jiang, Chenfanfu},
+  title   = {A Massively Parallel and Scalable Multi-GPU Material Point Method},
+  journal = {ACM Transactions on Graphics},
+  volume  = {39}, number = {4}, year = {2020},
+  doi     = {10.1145/3386569.3392442}
+}
+
+@phdthesis{bonus2023claymoreuw,
+  author = {Bonus, Justin},
+  title  = {Evaluation of Fluid-Driven Debris Impacts in a High-Performance
+            Multi-GPU Material Point Method},
+  school = {University of Washington},
+  year   = {2023}
+}
+```

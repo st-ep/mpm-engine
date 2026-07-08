@@ -171,15 +171,16 @@ block list buys nothing over the AABB. Graphs still win 1.73x on small scenes
 where launches dominate. Consequence: kernel-side tuning at 192^3 is exhausted;
 the remaining levers are substep COUNT (implicit density projection, ~25x,
 Step 4) and, if particle work must shrink, claymore-style particle binning +
-shared-memory P2G (port the design only; GPUMPM is GPLv3).
+shared-memory P2G (claymore is MIT, read/port with citation per AUTHORS.md;
+the 2018 GPUMPM repo is the GPL one, design-only).
 
 ## Step 5: claymore-style P2G (particle-bound regime, after the 192^3 A/B)
 
 Target: the ~90 percent of the large-scale substep that is particle work.
 Profile FIRST (`pour_franka --profile`: per-phase table, live launches + per-phase
 sync; shares are the signal) so each increment is judged against the phase it
-attacks. Design ported from GPUMPM/claymore papers only; their code is GPLv3 and
-must never be read or copied.
+attacks. Claymore is MIT (verified in the local Bonus fork; cite per AUTHORS.md);
+design notes in docs/claymore_notes.md. Only the 2018 GPUMPM repo is GPL (design-only).
 
 5a. Spatial sort. Periodically (every K ticks, K ~ 4 to 16; particles move well
     under a cell per tick) radix-sort particle indices by 4^3-block Morton-ish key
