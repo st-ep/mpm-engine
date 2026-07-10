@@ -391,7 +391,14 @@ class MPM_Simulator_WARP:
             inputs=[self.mpm_state.particle_F_trial],
             device=device,
         )
-        # initial deformation gradient is set to identity
+        # committed F starts at identity too: it is overwritten by the first
+        # return map, but pre-step exports (vol/cauchy) read it
+        wp.launch(
+            kernel=set_mat33_to_identity,
+            dim=self.n_particles,
+            inputs=[self.mpm_state.particle_F],
+            device=device,
+        )
 
         self.mpm_state.particle_vol = wp.from_numpy(
             particle_volume, dtype=float, device=device
@@ -448,7 +455,14 @@ class MPM_Simulator_WARP:
             inputs=[self.mpm_state.particle_F_trial],
             device=device,
         )
-        # initial trial deformation gradient is set to identity
+        # committed F starts at identity too: it is overwritten by the first
+        # return map, but pre-step exports (vol/cauchy) read it
+        wp.launch(
+            kernel=set_mat33_to_identity,
+            dim=self.n_particles,
+            inputs=[self.mpm_state.particle_F],
+            device=device,
+        )
 
         print("Particles initialized from torch data.")
         print("Total particles: ", self.n_particles)
