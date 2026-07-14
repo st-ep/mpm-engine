@@ -358,7 +358,9 @@ def mu_i_return_mapping(
         if tau_bar_K > mu_s * p_K:
             # plastic: bisect g(gdp) = tau_bar_K - G dt gdp - mu(I) p_K = 0,
             # strictly decreasing, sign change on [0, tau_bar_K / (G dt)]
-            I_coef = model.muI_d[mat] * wp.sqrt(model.muI_rho_s[mat] / p_C)
+            # p floored at 1e-6 Pa: rho_s/p overflows float32 below ~1e-35 Pa
+            # and the inf poisons mu(I) via I_mid/(I_mid+I0) = inf/inf = NaN
+            I_coef = model.muI_d[mat] * wp.sqrt(model.muI_rho_s[mat] / wp.max(p_C, 1e-6))
             lo = float(0.0)
             hi = tau_bar_K / (G * dt)
             for _ in range(48):
@@ -435,7 +437,8 @@ def mu_i_tabulated_return_mapping(
         # mu at zero shear (table value at smin) sets the static yield check
         mu_static = model.eta_table[0]
         if tau_bar_K > mu_static * p_K:
-            I_coef = model.muI_d[mat] * wp.sqrt(model.muI_rho_s[mat] / p_C)
+            # same 1e-6 Pa floor as the parametric mu(I) (f32 overflow guard)
+            I_coef = model.muI_d[mat] * wp.sqrt(model.muI_rho_s[mat] / wp.max(p_C, 1e-6))
             lo = float(0.0)
             hi = tau_bar_K / (G * dt)
             for _ in range(48):
@@ -535,7 +538,11 @@ def mu_i_phi_return_mapping(
     if p_comp <= 0.0:
         # at or below the reference volume: loose / stress free, only relax deviatoric;
         # preserve the volume (do not inject volume by resetting J to 1).
-        s_iso = wp.exp(mean_eps)
+        # clamp the volume memory at J = 8 (2x per axis): a grain remembered as
+        # more than 8x expanded is free rain whose further dilation carries no
+        # physics, and an unclamped exp(mean_eps) grows without bound for strays
+        # in contact-band velocity seams until it overflows float32
+        s_iso = wp.min(wp.exp(mean_eps), 2.0)
         F_elastic = U * wp.mat33(s_iso, 0.0, 0.0, 0.0, s_iso, 0.0, 0.0, 0.0, s_iso) * wp.transpose(V)
     else:
         p_K = p_comp * J                                  # Kirchhoff pressure scale
@@ -544,7 +551,8 @@ def mu_i_phi_return_mapping(
         dmu = model.muI_delta_mu[mat]
         I0 = model.muI_I0[mat]
         if tau_bar_K > mu_s * p_K:
-            I_coef = model.muI_d[mat] * wp.sqrt(model.muI_rho_s[mat] / p_comp)
+            # same 1e-6 Pa floor as the parametric mu(I) (f32 overflow guard)
+            I_coef = model.muI_d[mat] * wp.sqrt(model.muI_rho_s[mat] / wp.max(p_comp, 1e-6))
             lo = float(0.0)
             hi = tau_bar_K / (G * dt)
             for _ in range(48):
