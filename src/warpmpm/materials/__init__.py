@@ -10,6 +10,9 @@ fork's (material_name, params). Compose, do not subclass:
     granular(mu_s=0.38, delta_mu=0.26, I0=0.3)  # Pouliquen mu(I)
     granular(mu_s=0.38).with_dilatancy(phi_init=0.6, chi=0.2)     # compressible mu(I)-Phi(I)
     elastic(E=1e5, nu=0.3)                       # Neo-Hookean-ish solid
+    vonmises(E=2e5, yield_stress=3.5e3).with_viscosity(80)  # Bingham elasto-viscoplastic
+                                                 # SOLID (holds statics; rate-dependent
+                                                 # flow above yield)
 
 Materials are named for their PHYSICS (newtonian, granular, elastic), never for an
 application. Each `.with_*` returns a new frozen Material, so they compose freely. Not
@@ -93,6 +96,20 @@ class Material:
         if self.base == "elastic":
             return "jelly", dict(E=self.E, nu=self.nu, density=self.density)
         if self.base == "vonmises":
+            if self.viscosity > 0.0:
+                # fork "visplas" (id 3): StVK elastic predictor + Perzyna-overstress
+                # von-Mises return -- the Bingham-type ELASTO-VISCOPLASTIC solid. Elastic
+                # below yield, so statics hold exactly (the regularized
+                # newtonian.with_yield FLUID realization creeps at rest by construction);
+                # above yield, plastic flow with viscous overstress. Fork-parameter
+                # conventions (measured by experiments/bingham_evp_couette.py): steady
+                # simple shear obeys tau = yield_stress/sqrt(3) + (plastic_viscosity/2)*gd,
+                # so a Bingham law with SHEAR yield stress tau_y and viscosity eta enters
+                # as yield_stress=sqrt(3)*tau_y, plastic_viscosity=2*eta. No hardening on
+                # this path (xi is ignored by the visplas return).
+                return "visplas", dict(E=self.E, nu=self.nu, density=self.density,
+                                       yield_stress=self.yield_stress,
+                                       plastic_viscosity=self.viscosity)
             # fork "metal" (id 1): StVK elastic predictor + von-Mises (J2) radial return. A solid
             # that HOLDS a shape; identified by (G via E,nu) and yield_stress, with optional xi.
             return "metal", dict(E=self.E, nu=self.nu, density=self.density,

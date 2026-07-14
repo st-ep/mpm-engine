@@ -12,6 +12,12 @@ MATERIAL_NAME_TO_ID = {
     "snow": 4, "plasticine": 5, "fluid": 6, "stationary": 7, "rigid": 8,
     "mu_i_sand": 9, "newtonian": 10, "mu_i_phi": 11, "tabulated_viscous": 12,
     "tabulated_mu_i": 13,
+    # alias for id 3: the upstream "foam" slot actually dispatches the StVK elastic
+    # predictor + Perzyna-overstress von-Mises return (mpm_utils.
+    # viscoplasticity_return_mapping_with_StVK) -- a Bingham-type elasto-viscoplastic
+    # SOLID (elastic below yield, viscous plastic flow above). "visplas" names the
+    # physics; both keys select the same kernel path.
+    "visplas": 3,
 }
 MAX_MATERIALS = 16
 
