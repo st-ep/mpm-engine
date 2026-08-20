@@ -323,3 +323,77 @@ def test_moduli_conversions_round_trip():
         E2, nu2 = moduli_to_E_nu(mu, lam)
         assert abs(E2 / E - 1.0) < 1e-12
         assert abs(nu2 - nu) < 1e-12
+
+
+# --------------------------------------------------------------------------
+# The law-independent core: any number of columns, plus a known stress part
+# --------------------------------------------------------------------------
+
+def test_single_column_solve_and_known_stress_part():
+    """Moving a column into the known stress part shifts b by exactly that column.
+
+    The sand and water legs of the NCLaw comparison both ride this path: one
+    unknown, and for sand a pressure term that is data rather than unknown. The
+    identity below is exact by construction, so it pins the b_known plumbing and
+    the sign with it, and a K = 1 system must not go looking for the elastic
+    pair's names.
+    """
+    from ident.weakform.elastic_grid import assemble_columns_timeweak
+
+    mu_t, lam_t = E_nu_to_moduli(2.0e5, 0.3)
+    X, F, vol0, mass, _ = _manufactured_accel(mu_t, lam_t)
+    T = 8
+    xs = np.repeat(X[None], T, axis=0)
+    vs = np.full((T, len(X), 3), 0.05)
+    s_mu, s_lam = corotated_cauchy_columns(F)
+    Vcur = np.linalg.det(F) * vol0
+    both = Vcur[:, None, None, None] * np.stack([s_mu, lam_t * s_lam], axis=1)
+    only_mu = both[:, :1]
+    known = both[:, 1]
+
+    kw = dict(n_columns=2, window_frames=T, min_support_mass_frac=0.0,
+              window_taper_cells=None)
+    sys_two = assemble_columns_timeweak(
+        xs, vs, mass, G_VEC, 1.0e-3, N_GRID, GRID_LIM,
+        lambda f: (both, None, np.ones(len(X), dtype=bool), None), **kw)
+    kw["n_columns"] = 1
+    sys_one = assemble_columns_timeweak(
+        xs, vs, mass, G_VEC, 1.0e-3, N_GRID, GRID_LIM,
+        lambda f: (only_mu, known, np.ones(len(X), dtype=bool), None), **kw)
+
+    assert sys_one.n_rows == sys_two.n_rows > 0
+    assert sys_one.A.shape[1] == 1 and sys_two.A.shape[1] == 2
+    assert np.allclose(sys_one.A[:, 0], sys_two.A[:, 0], rtol=1e-12, atol=0.0)
+    assert np.allclose(sys_one.b, sys_two.b - sys_two.A[:, 1],
+                       rtol=1e-10, atol=1e-14 * np.abs(sys_two.b).max())
+
+    out = solve_elastic_grid(sys_one)
+    assert len(out["theta"]) == 1
+    assert "mu" not in out and "lam" not in out
+    assert len(solve_elastic_grid(sys_two)["theta"]) == 2
+    assert "mu" in solve_elastic_grid(sys_two)
+
+
+def test_columns_fn_may_skip_a_frame():
+    """Returning None from columns_fn drops the frame, and any window
+    containing it, without raising."""
+    from ident.weakform.elastic_grid import assemble_columns_timeweak
+
+    mu_t, lam_t = E_nu_to_moduli(2.0e5, 0.3)
+    X, F, vol0, mass, _ = _manufactured_accel(mu_t, lam_t)
+    T = 10
+    xs = np.repeat(X[None], T, axis=0)
+    vs = np.zeros((T, len(X), 3))
+    s_mu, s_lam = corotated_cauchy_columns(F)
+    Vsig = (np.linalg.det(F) * vol0)[:, None, None, None] * np.stack(
+        [s_mu, s_lam], axis=1)
+
+    def columns_fn(f):
+        return None if f == 0 else (Vsig, None, np.ones(len(X), dtype=bool), None)
+
+    sysm = assemble_columns_timeweak(
+        xs, vs, mass, G_VEC, 1.0e-3, N_GRID, GRID_LIM, columns_fn,
+        n_columns=2, window_frames=4, min_support_mass_frac=0.0,
+        window_taper_cells=None)
+    assert sysm.n_rows > 0
+    assert 0 not in sysm.frames_used

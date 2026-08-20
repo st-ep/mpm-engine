@@ -897,7 +897,11 @@ def solve_elastic_grid(
 ) -> dict[str, float]:
     """Least-squares (optionally ridge) solve for (mu, lambda).
 
-    The two columns differ in magnitude by orders of magnitude on a nearly
+    Works for any number of columns. theta and theta_sd are always returned;
+    when there are exactly two columns the elastic names (mu, lam, E, nu) are
+    added, since that is what the elastic call sites read.
+
+    Columns can differ in magnitude by orders of magnitude on a nearly
     incompressible motion, so the normal equations are formed on
     column-normalized data and the scaling is undone afterwards. cond(A^T A) is
     reported on the RAW columns, which is the number the gate asks for.
@@ -924,18 +928,20 @@ def solve_elastic_grid(
     cov_s = sigma2 * np.linalg.inv(M)
     cov = cov_s / np.outer(scale, scale)
 
-    mu, lam = float(theta[0]), float(theta[1])
-    E, nu = moduli_to_E_nu(mu, lam)
-    return {
-        "mu": mu,
-        "lam": lam,
-        "E": E,
-        "nu": nu,
-        "mu_sd": float(np.sqrt(max(cov[0, 0], 0.0))),
-        "lam_sd": float(np.sqrt(max(cov[1, 1], 0.0))),
+    out = {
+        "theta": [float(t) for t in theta],
+        "theta_sd": [float(np.sqrt(max(cov[k, k], 0.0)))
+                     for k in range(A.shape[1])],
         "cond_AtA": cond,
         "cond_AtA_scaled": float(np.linalg.cond(As.T @ As)),
         "residual_rel": float(np.linalg.norm(r) / bn) if bn > 0 else float("inf"),
         "n_rows": int(A.shape[0]),
         "trace_AtA": float(np.trace(AtA)),
     }
+    if A.shape[1] == 2:
+        # the elastic pair, named for readability at the call sites that want it
+        mu, lam = float(theta[0]), float(theta[1])
+        E, nu = moduli_to_E_nu(mu, lam)
+        out.update({"mu": mu, "lam": lam, "E": E, "nu": nu,
+                    "mu_sd": out["theta_sd"][0], "lam_sd": out["theta_sd"][1]})
+    return out

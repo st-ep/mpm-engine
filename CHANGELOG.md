@@ -19,7 +19,7 @@
   - Smooth spatial windows over the kept nodes and exact row aggregation over
     node and frame blocks, both linear combinations of exact node rows.
   - Node gating on collider clearance, support mass, and per-particle validity.
-- `tests/test_elastic_grid.py`: 14 tests, including a manufactured-acceleration
+- `tests/test_elastic_grid.py`: 16 tests, including a manufactured-acceleration
   patch test that recovers (mu, lambda) to solver precision, and order-one
   negative controls for the factor of two in the mu column, the load sign, and
   the current-versus-reference volume pairing.
@@ -28,6 +28,13 @@
   NCLaw-matched comparison can write schema-valid dumps for its three
   non-granular materials. Gate code branches only on the two granular names, so
   no existing behaviour changes.
+
+### Changed
+
+- `solve_elastic_grid` works for any number of columns: it always returns
+  `theta` and `theta_sd`, and adds the elastic names (mu, lam, E, nu) only when
+  there are exactly two. A one-column law, the sand friction coefficient or the
+  water bulk modulus, no longer trips over the elastic pair's names.
 
 ### Measured
 
