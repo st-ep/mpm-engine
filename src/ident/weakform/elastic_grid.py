@@ -46,16 +46,42 @@ m_p = rho_0 V_p^0 = (rho_0 / J_p) (J_p V_p^0), so the load term needs no J at
 all. Both stress columns are symmetrized before use, matching the engine's own
 ``(tau + tau^T) / 2``.
 
-The load. The exact statement carries the GRID acceleration a_i, which a dump of
-particle trajectories does not hold. The load here is the mass-weighted
-particle-acceleration interpolation
+The load, and why there are two routes. The exact statement carries the GRID
+acceleration a_i, which a dump of particle trajectories does not hold. The
+instantaneous route substitutes the mass-weighted particle-acceleration
+interpolation
 
     b_(i,d) = sum_p m_p (g - a_p)_d N_i(x_p),
 
 consistent to the temporal discretization in the same sense as
 ``grid_assembly.py`` documents for the granular case (G2P makes v_p a nodal
 interpolation, so the particle sum is a mass-weighted smoothing of the nodal
-accelerations, not a different quantity).
+accelerations, not a different quantity). On the granular collapse that is
+enough. On an elastic bounce it is not: the gap between the two accelerations is
+the P2G-then-G2P projection residual, it enters divided by dt, and it scales with
+the gradient of the test function, so a single node basis pays the most for it.
+Measured on the sphere drop, that route lands at 0.6 percent on E.
+
+The time-weak route removes the acceleration from the data instead of
+approximating it. Integrating the balance against a test function that vanishes
+at both ends of a time window gives
+
+    INT dt sum_p m_p a_p . w chi
+        = - INT dt sum_p m_p [ v_p (v_p . grad w) chi + v_p w chi' ],
+
+the M2 load already used for the granular space-time form in
+``galerkin_spacetime.py``. Only x, v and F are read, no derivative of a measured
+quantity appears, and the same sphere drop lands at 0.10 percent on E with the
+cube at 0.07. This is the route the NCLaw comparison ships;
+``assemble_elastic_grid`` keeps the instantaneous route for the manufactured
+tests, where the load is exact by construction.
+
+Scope. ``assemble_columns_timeweak`` is the law-independent engine: a caller
+hands it the volume-weighted Cauchy stress columns of any law linear in theta,
+plus an optional known stress part for the piece that is data rather than
+unknown, and the node gating, collider clearance, spatial windows and temporal
+weight are shared. The fixed-corotated pair is the first client and names the
+module; the constant-friction and EOS legs of the NCLaw comparison reuse it.
 
 Node gating, three reasons a node is dropped:
   1. Collider reach. ``collide`` in the fork overwrites grid_v_out at nodes with
