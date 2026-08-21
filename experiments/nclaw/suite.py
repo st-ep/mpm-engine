@@ -1,0 +1,1021 @@
+"""NCLaw-matched comparison: identify from one cube throw, roll out on their shapes.
+
+NCLaw (ICML 2023) learns a neural constitutive law by differentiating an MPM
+rollout, from ONE thrown-blob trajectory per material, and reports the
+box-normalized per-particle position MSE on the training scene and on a
+held-out geometry. This runs their protocol with our engine and our weak-form
+identification: the law comes from a convex, linear-in-theta solve on the cube
+trajectory alone, the simulator is never differentiated, and the recovered law
+is then re-simulated on the cube and on held-out shapes.
+
+Protocol, from NCLaw/experiments/configs (verified):
+  0.5 m cube of particles centred at (0.5, 0.5, 0.5) in a unit box, thrown with
+  linear velocity [1.0, -1.5, -2.0] and angular velocity [4, 4, 4] in their
+  y-up frame, freeslip walls with a 3-cell bound, 1000 steps of dt 5e-4 = 0.5 s.
+  Our frame is z-up, so the throw and gravity are rotated by the same proper
+  rotation (their +y becomes our +z) and our engine picks its own stable dt.
+
+Stages:
+  gen       truth trajectories for the cube and the evaluation shapes
+  identify  recover the law from the CUBE trajectory only
+  rollout   re-simulate every scene at the recovered law, score the MSE
+  report    results.json plus report.md plus the comparison figure
+
+Run:
+  .venv/bin/python -m experiments.nclaw.suite gen      --material jelly --shapes cube,bunny
+  .venv/bin/python -m experiments.nclaw.suite identify --material jelly
+  .venv/bin/python -m experiments.nclaw.suite rollout  --material jelly --shapes cube,bunny
+  .venv/bin/python -m experiments.nclaw.suite report   --material jelly
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+OUT = ROOT / "out" / "nclaw_suite"
+DUMPS = OUT / "dumps"
+import os
+
+def _find_nclaw() -> Path:
+    """The NCLaw clone (meshes + configs). NCLAW_DIR wins; then common layouts."""
+    cands = [Path(os.environ["NCLAW_DIR"])] if "NCLAW_DIR" in os.environ else []
+    cands += [ROOT.parent / "NCLaw", ROOT / "NCLaw", ROOT.parent.parent / "NCLaw"]
+    for c in cands:
+        if (c / "nclaw" / "assets").is_dir():
+            return c
+    raise SystemExit("NCLaw clone not found; clone github NCLaw next to this repo "
+                     "or set NCLAW_DIR to it (needed for their meshes and configs)")
+
+ASSETS = _find_nclaw() / "nclaw" / "assets"
+
+# ---------------------------------------------------------------------------
+# Their scene, in their frame, then rotated once into ours
+# ---------------------------------------------------------------------------
+
+# proper rotation taking their y-up frame to our z-up frame: (x, y, z) -> (x, -z, y)
+R_YUP_TO_ZUP = np.array([[1.0, 0.0, 0.0],
+                         [0.0, 0.0, -1.0],
+                         [0.0, 1.0, 0.0]])
+GRAVITY_YUP = np.array([0.0, -9.8, 0.0])
+LIN_VEL_YUP = np.array([1.0, -1.5, -2.0])       # configs/env/blob/vel/preset.yaml
+ANG_VEL_YUP = np.array([4.0, 4.0, 4.0])
+GRAVITY = R_YUP_TO_ZUP @ GRAVITY_YUP            # (0, 0, -9.8)
+LIN_VEL = R_YUP_TO_ZUP @ LIN_VEL_YUP            # (1.0, 2.0, -1.5)
+ANG_VEL = R_YUP_TO_ZUP @ ANG_VEL_YUP            # (4.0, -4.0, 4.0); a pseudovector
+                                                # under a PROPER rotation
+# NCLaw's geometry evals do NOT use the preset throw: eval/shape.py switches to
+# vel/mild.yaml, linear [1.0, -1.5, -1.5], angular [1, 1, 1] (y-up). Measured
+# reason to honor that here: the preset throw on the stiff sand (E = 1e6,
+# c = 33 m/s) drives the blub cloud through the freeslip walls (truth x
+# reaches 1.435 in the unit box) and the rollout goes NaN at frame 59, so the
+# preset-throw blub cell is a scene-integrity failure, not a comparison. The
+# mild throw is the primary config for the their-mesh generalization cells;
+# the preset-throw shape cells remain as the geometry-isolated secondary set
+# where they stay contained.
+VELS = {
+    "preset": (LIN_VEL, ANG_VEL),
+    "mild": (R_YUP_TO_ZUP @ np.array([1.0, -1.5, -1.5]),
+             R_YUP_TO_ZUP @ np.array([1.0, 1.0, 1.0])),
+}
+GRID_LIM = 1.0
+N_GRID = 32                                     # sim/high.yaml; their training used 20
+BOUND_CELLS = 3
+T_END = 0.5                                     # 1000 steps of dt 5e-4
+N_FRAMES = 125                                  # our dump cadence, 4 ms
+CENTER = np.array([0.5, 0.5, 0.5])
+
+# NCLaw shape configs: mesh name and the bounding-box size they scale it to.
+SHAPES: dict[str, dict] = {
+    "cube": {"kind": "cube", "size": 0.5},
+    "bunny": {"kind": "mesh", "mesh": "bunny", "size": 0.7},
+    "spot": {"kind": "mesh", "mesh": "spot", "size": 0.8},
+    "dragon": {"kind": "mesh", "mesh": "dragon_full", "size": 0.8},
+    "armadillo": {"kind": "mesh", "mesh": "armadillo", "size": 0.7},
+    # blub's fins are 1 to 2 particles thick at the default dx/2 pitch (7981
+    # particles), and the sand run goes NaN there (preset throw: rollout NaN at
+    # frame 59; mild throw: truth NaN at frame 39). pitch_div 3 samples about
+    # 27k particles, which stabilizes the thin features and also matches
+    # NCLaw's own geometry-eval count (about 30k, paper p7).
+    "blub": {"kind": "mesh", "mesh": "blub", "size": 0.8, "pitch_div": 3},
+}
+
+# The held-out shape NCLaw's own geometry-generalization column uses, per
+# material. Their figure pairs a different mesh with each material, so a cell
+# of our table is only strictly matched when the shape agrees.
+NCLAW_HELD_OUT_SHAPE = {"jelly": "armadillo", "plasticine": "bunny",
+                        "sand": "blub", "water": "spot"}
+
+MATERIALS: dict[str, dict] = {
+    # engine: warp-mpm material name; law: dump schema law tag
+    "jelly": {
+        "engine": "jelly", "law": "corotated", "rho": 1000.0,
+        "truth": {"E": 1.0e5, "nu": 0.2},
+        "theta_names": ["mu", "lam"],
+    },
+    "plasticine": {
+        "engine": "plasticine", "law": "vonmises", "rho": 1000.0,
+        "truth": {"E": 3.0e5, "nu": 0.25, "yield_stress": 5.0e3},
+        "theta_names": ["mu", "lam", "yield_stress"],
+    },
+    "sand": {
+        "engine": "sand", "law": "drucker_prager", "rho": 1000.0,
+        "truth": {"E": 1.0e6, "nu": 0.2, "friction_angle": 25.0},
+        "theta_names": ["friction_angle"],
+    },
+    "water": {
+        "engine": "fluid", "law": "eos_fluid", "rho": 1000.0,
+        # their volumetric elasticity E, nu; the engine takes a bulk modulus
+        "truth": {"E": 1.0e5, "nu": 0.3},
+        "theta_names": ["bulk_modulus"],
+    },
+}
+
+
+def bulk_from_E_nu(E: float, nu: float) -> float:
+    """K = E / (3 (1 - 2 nu)), the standard mapping; recorded because NCLaw's
+    water config states (E, nu) while our fluid material takes a bulk modulus."""
+    return float(E / (3.0 * (1.0 - 2.0 * nu)))
+
+
+def _git_rev(path: Path) -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Particle seeding: deterministic, so truth and rollout are 1:1
+# ---------------------------------------------------------------------------
+
+def seed_cloud(shape: str, n_grid: int = N_GRID, grid_lim: float = GRID_LIM
+               ) -> tuple[np.ndarray, np.ndarray]:
+    """Particle positions and reference volumes for one NCLaw shape.
+
+    Pitch is dx/2 (eight particles per cell), our engine's working density.
+    NCLaw seeds the cube at resolution 10 per axis, about 1.1 of their cells,
+    so our particle counts are larger; the metric is computed between OUR truth
+    and OUR rollout on identical clouds, so the count affects the magnitude of
+    the number and not its meaning. Recorded as a deviation.
+    """
+    cfg = SHAPES[shape]
+    dx = grid_lim / n_grid
+    h = dx / float(cfg.get("pitch_div", 2))
+    if cfg["kind"] == "cube":
+        half = cfg["size"] / 2.0
+        ax = np.arange(-half, half + 0.5 * h, h)
+        pts = np.stack(np.meshgrid(ax, ax, ax, indexing="ij"), -1).reshape(-1, 3)
+        pts = pts + CENTER
+    else:
+        import trimesh
+        m = trimesh.load(ASSETS / f"{cfg['mesh']}.obj", force="mesh")
+        m.apply_scale(cfg["size"] / m.extents.max())
+        pts = np.asarray(m.voxelized(pitch=h).fill().points, dtype=np.float64)
+        pts += np.random.default_rng(0).uniform(-0.2 * h, 0.2 * h, pts.shape)
+        pts += CENTER - pts.mean(axis=0)
+    vol0 = np.full(len(pts), h ** 3, dtype=np.float32)
+    return pts.astype(np.float32), vol0
+
+
+def throw_velocity(pts: np.ndarray, vel: str = "preset") -> np.ndarray:
+    """v = lin + ang x (x - centre), exactly NCLaw's MPMStateInitializer."""
+    lin, ang = VELS[vel]
+    return (lin[None, :]
+            + np.cross(ang[None, :], pts.astype(np.float64) - CENTER[None, :])
+            ).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Forward run
+# ---------------------------------------------------------------------------
+
+def engine_params(material: str, theta: dict | None = None) -> dict:
+    """warp-mpm parameter dict for a material, at truth or at recovered theta."""
+    spec = MATERIALS[material]
+    p = dict(spec["truth"])
+    if theta:
+        p.update(theta)
+    kw = {"material": spec["engine"], "density": spec["rho"],
+          "g": list(GRAVITY)}
+    if spec["engine"] == "fluid":
+        kw["bulk_modulus"] = p.get("bulk_modulus",
+                                   bulk_from_E_nu(p["E"], p["nu"]))
+        kw["E"], kw["nu"] = p["E"], p["nu"]
+    else:
+        kw["E"], kw["nu"] = p["E"], p["nu"]
+    if "yield_stress" in p:
+        kw["yield_stress"] = p["yield_stress"]
+        kw["softening"] = 0.0          # NCLaw's von Mises has no damage term
+    if "friction_angle" in p:
+        kw["friction_angle"] = p["friction_angle"]
+    return kw
+
+
+def _wave_speed(material: str, kw: dict) -> float:
+    rho = MATERIALS[material]["rho"]
+    if MATERIALS[material]["engine"] == "fluid":
+        return float(np.sqrt(kw["bulk_modulus"] / rho))
+    E, nu = kw["E"], kw["nu"]
+    lam = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+    mu = E / (2.0 * (1.0 + nu))
+    return float(np.sqrt((lam + 2.0 * mu) / rho))     # p-wave speed
+
+
+def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = None,
+              n_grid: int = N_GRID, grid_lim: float = GRID_LIM,
+              t_end: float = T_END, n_frames: int = N_FRAMES,
+              cfl: float = 0.35, vel: str = "preset", log=print) -> Path:
+    """One truth or rollout trajectory, dumped schema-valid with F and V0."""
+    import warp as wp
+    wp.config.quiet = True
+    wp.init()
+    import torch
+
+    from experiments.nclaw.dump_writer import DumpWriter
+    from experiments.nclaw.probe_l_convention import L_CONVENTION_STRING
+    from warpmpm.kernels import MPM_Simulator_WARP
+
+    pts, vol0 = seed_cloud(shape, n_grid, grid_lim)
+    v0 = throw_velocity(pts, vel)
+    kw = engine_params(material, theta)
+    dx = grid_lim / n_grid
+    frame_dt = t_end / n_frames
+    c = _wave_speed(material, kw)
+    v_max = float(np.abs(v0).max())
+    dt_cfl = cfl * dx / max(c + v_max, 1e-9)
+    substeps = max(int(np.ceil(frame_dt / dt_cfl)), 1)
+    dt = frame_dt / substeps
+    log(f"[gen] {material}/{shape} N={len(pts)} grid={n_grid}^3 c={c:.0f}m/s "
+        f"dt={dt:.2e} sub={substeps} frames={n_frames} theta={theta or 'truth'}")
+
+    s = MPM_Simulator_WARP(len(pts), device="cpu")
+    s.load_initial_data_from_torch(
+        torch.from_numpy(np.ascontiguousarray(pts)),
+        torch.from_numpy(np.ascontiguousarray(vol0)),
+        n_grid=n_grid, grid_lim=grid_lim, device="cpu")
+    s.import_particle_v_from_torch(
+        torch.from_numpy(np.ascontiguousarray(v0)), device="cpu")
+    s.set_parameters_dict(kw, device="cpu")
+    s.finalize_mu_lam(device="cpu")
+    # freeslip walls on all six faces, 3-cell bound: their bc = freeslip
+    pad = BOUND_CELLS * dx
+    for pt, nrm in ((( pad, 0, 0), ( 1, 0, 0)), ((grid_lim - pad, 0, 0), (-1, 0, 0)),
+                    ((0,  pad, 0), (0,  1, 0)), ((0, grid_lim - pad, 0), (0, -1, 0)),
+                    ((0, 0,  pad), (0, 0,  1)), ((0, 0, grid_lim - pad), (0, 0, -1))):
+        s.add_surface_collider(tuple(map(float, pt)), tuple(map(float, nrm)), "slip")
+
+    writer = DumpWriter(
+        s, grain_diameter=1.0e-3, rho_s=MATERIALS[material]["rho"],
+        rho_bulk=MATERIALS[material]["rho"], packing_fraction=1.0,
+        gravity_inplane=(float(GRAVITY[0]), float(GRAVITY[2])),
+        law=MATERIALS[material]["law"], law_params=engine_params(material, theta),
+        theta_true=None, l_convention=L_CONVENTION_STRING, store_F=True,
+        extra={"material": material, "shape": shape, "n_grid": n_grid,
+               "grid_lim": grid_lim, "dt": dt, "substeps_per_frame": substeps,
+               "gravity": list(GRAVITY), "vel_name": vel,
+               "lin_vel": [float(x) for x in VELS[vel][0]],
+               "ang_vel": [float(x) for x in VELS[vel][1]],
+               "bound_cells": BOUND_CELLS,
+               "collider_bc": "slip", "recovered": theta is not None})
+    t0 = time.time()
+    step = 0
+    for frame in range(n_frames + 1):
+        if not writer.snapshot(frame * frame_dt):
+            log(f"[gen] NaN at frame {frame}; truncating")
+            break
+        if frame == n_frames:
+            break
+        for _ in range(substeps):
+            s.p2g2p(step, dt, device="cpu")
+            step += 1
+    writer.finalize(out_path, frame_dt=frame_dt)
+    log(f"[gen] wrote {out_path.name} ({time.time() - t0:.0f}s)")
+    return out_path
+
+
+def dump_path(material: str, shape: str, kind: str, vel: str = "preset") -> Path:
+    tag = "" if vel == "preset" else f"_{vel}"
+    return DUMPS / f"{material}_{shape}{tag}_{kind}.npz"
+
+
+def stage_gen(material: str, shapes: list[str], force: bool = False,
+              n_grid: int = N_GRID, vel: str = "preset", log=print) -> dict:
+    DUMPS.mkdir(parents=True, exist_ok=True)
+    made = {}
+    for shape in shapes:
+        p = dump_path(material, shape, "truth", vel)
+        if p.exists() and not force:
+            log(f"[gen] skip {p.name} (exists)")
+        else:
+            run_scene(material, shape, p, theta=None, n_grid=n_grid, vel=vel, log=log)
+        made[shape] = str(p)
+    return made
+
+
+# ---------------------------------------------------------------------------
+# Scoring: NCLaw's metric
+# ---------------------------------------------------------------------------
+
+def nclaw_position_mse(truth: Path, pred: Path, grid_lim: float = GRID_LIM,
+                       frame_step: int = 5) -> dict:
+    """NCLaw's metric: mean over particles AND coordinates of the squared
+    position difference, in their unit box, averaged over sampled frames.
+
+    Their eval averages every frame_step-th frame, and their box is 1.0 m, so
+    the box normalization is a division by grid_lim^2 that is unity here. Note
+    the mean over the three coordinates: summing them instead would report a
+    number three times larger.
+    """
+    t = np.load(truth)
+    r = np.load(pred)
+    nf = min(t["x"].shape[0], r["x"].shape[0])
+    n = min(t["x"].shape[1], r["x"].shape[1])
+    diff = (t["x"][:nf, :n] - r["x"][:nf, :n]) / grid_lim
+    per_frame = (diff ** 2).mean(axis=(1, 2))
+    sel = per_frame[::frame_step]
+    return {
+        "mse": float(sel.mean()),
+        "mse_final_frame": float(per_frame[-1]),
+        "rmse_mm": float(np.sqrt((diff ** 2).sum(-1).mean()) * 1e3),
+        "n_frames": int(nf),
+        "n_particles": int(n),
+        "per_frame": per_frame.tolist(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Identification, from the CUBE trajectory alone
+# ---------------------------------------------------------------------------
+
+SQRT3 = float(np.sqrt(3.0))
+
+
+def friction_to_mu(phi_deg: float) -> float:
+    """Drucker-Prager friction angle -> the mu = sqrt(J2) / p friction coefficient.
+
+    Derived from the fork rather than assumed. ``set_parameters_dict`` stores
+    alpha = sqrt(2/3) * 2 sin phi / (3 - sin phi), and ``sand_return_mapping``
+    yields when
+
+        ||dev eps|| + (3 lam + 2 mu) / (2 mu) * tr eps * alpha > 0.
+
+    Hencky elasticity gives ||dev tau|| = 2 mu ||dev eps|| and
+    tr tau = (3 lam + 2 mu) tr eps = -3 p, so the yield surface is
+    ||dev tau|| = 3 alpha p. This tree measures friction as
+    mu = sqrt(J2) / p with sqrt(J2) = ||dev tau|| / sqrt(2), hence
+
+        mu = 3 alpha / sqrt(2) = 2 sqrt(3) sin phi / (3 - sin phi),
+
+    which is the textbook compression-cone Drucker-Prager constant. At 25
+    degrees this is 0.5679.
+    """
+    s = float(np.sin(np.deg2rad(phi_deg)))
+    return 2.0 * SQRT3 * s / (3.0 - s)
+
+
+def mu_to_friction(mu_c: float) -> float:
+    """Inverse of friction_to_mu: sin phi = 3 mu / (2 sqrt(3) + mu)."""
+    s = 3.0 * mu_c / (2.0 * SQRT3 + mu_c)
+    return float(np.rad2deg(np.arcsin(np.clip(s, -1.0, 1.0))))
+
+
+def _load_arrays(path: Path) -> dict:
+    """Positions, velocities, F, volumes and the run's grid config from a dump."""
+    from ident.io.schema import validate_dump_schema
+    meta = validate_dump_schema(path)             # gate discipline: never raw keys
+    d = np.load(path)
+    T, P = d["x"].shape[0], d["x"].shape[1]
+    out = {
+        "meta": meta,
+        "x": d["x"].astype(np.float64),
+        "v": d["v"].astype(np.float64),
+        "L": d["L"].astype(np.float64).reshape(T, P, 3, 3),
+        "stress": d["stress"].astype(np.float64).reshape(T, P, 3, 3),
+        "volume": d["volume"].astype(np.float64),
+        "mass": d["mass"].astype(np.float64),
+        "frame_dt": float(d["frame_dt"]),
+        "n_grid": int(meta.extra["n_grid"]),
+        "grid_lim": float(meta.extra["grid_lim"]),
+        "g": np.asarray(meta.extra["gravity"], dtype=float),
+    }
+    if "F" in d.files:
+        out["F"] = d["F"].astype(np.float64).reshape(T, P, 3, 3)
+        out["vol0"] = d["volume0"].astype(np.float64)
+    return out
+
+
+def wall_planes(n_grid: int, grid_lim: float) -> list:
+    """The six freeslip planes of the NCLaw box, as (point, inward normal)."""
+    pad = BOUND_CELLS * (grid_lim / n_grid)
+    return [((pad, 0.0, 0.0), (1.0, 0.0, 0.0)),
+            ((grid_lim - pad, 0.0, 0.0), (-1.0, 0.0, 0.0)),
+            ((0.0, pad, 0.0), (0.0, 1.0, 0.0)),
+            ((0.0, grid_lim - pad, 0.0), (0.0, -1.0, 0.0)),
+            ((0.0, 0.0, pad), (0.0, 0.0, 1.0)),
+            ((0.0, 0.0, grid_lim - pad), (0.0, 0.0, -1.0))]
+
+
+def _longest_run(frames: list[int], counts: list[int], min_count: int) -> list[int]:
+    """Longest contiguous stretch of the frame list whose count clears min_count."""
+    best: list[int] = []
+    cur: list[int] = []
+    for f, c in zip(frames, counts, strict=True):
+        if c >= min_count:
+            cur.append(f)
+            if len(cur) > len(best):
+                best = list(cur)
+        else:
+            cur = []
+    return best
+
+
+def _hencky_dev_norm(F: np.ndarray) -> np.ndarray:
+    """||dev log sigma(F)||, the rotation-invariant deviatoric strain measure."""
+    sig = np.linalg.svd(F, compute_uv=False)
+    eps = np.log(np.clip(np.abs(sig), 1e-12, None))
+    return np.linalg.norm(eps - eps.mean(axis=-1, keepdims=True), axis=-1)
+
+
+def identify_elastic(arr: dict, window_frames: int = 26, frame_stride: int = 2,
+                     margin_cells: float = 3.0, log=print) -> dict:
+    """(mu, lambda) of the fixed-corotated pair by the Step 0 time-weak assembly."""
+    from ident.weakform.elastic_grid import (
+        assemble_elastic_timeweak,
+        moduli_to_E_nu,
+        solve_elastic_grid,
+    )
+    frames = list(range(0, arr["x"].shape[0], frame_stride))
+    sysm = assemble_elastic_timeweak(
+        arr["x"], arr["F"], arr["v"], arr["vol0"], arr["mass"], arr["g"],
+        arr["frame_dt"] * frame_stride, arr["n_grid"], arr["grid_lim"],
+        frames=frames, window_frames=window_frames,
+        collider_planes=wall_planes(arr["n_grid"], arr["grid_lim"]),
+        collider_margin_cells=margin_cells)
+    if sysm.n_rows < 8:
+        return {"refused": True, "reason": "no surviving rows",
+                "n_rows": sysm.n_rows,
+                "n_rows_before_gating": sysm.n_rows_before_gating}
+    out = solve_elastic_grid(sysm)
+    E, nu = moduli_to_E_nu(out["mu"], out["lam"])
+    out.update({"E": E, "nu": nu, "refused": False,
+                "n_rows_before_gating": sysm.n_rows_before_gating,
+                "row_survival": sysm.row_survival,
+                "strain_coverage": list(sysm.strain_coverage),
+                "n_frames_used": len(sysm.frames_used),
+                "window_frames": window_frames, "frame_stride": frame_stride})
+    log(f"[ident] elastic mu={out['mu']:.4e} lam={out['lam']:.4e} "
+        f"E={E:.4e} nu={nu:.4f} rows={sysm.n_rows} cond={out['cond_AtA']:.2e}")
+    return out
+
+
+def identify_yield(arr: dict, mu_hat: float, plateau_pct: float = 99.9,
+                   plateau_frac_min: float = 1.0e-3, log=print) -> dict:
+    """von Mises yield from the saturation of the deviatoric Hencky strain.
+
+    The return map caps ||dev eps|| at yield / (2 mu), so the cap IS the yield
+    stress divided by twice the shear modulus, and the yield stress follows from
+    the mu the elastic solve already recovered. It is identifiable only if
+    material actually reached the cap: a sub-yield loading gives a lower bound,
+    not a value, and that is a refusal.
+    """
+    T = arr["F"].shape[0]
+    vals = np.concatenate([_hencky_dev_norm(arr["F"][f]) for f in range(0, T, 4)])
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        return {"refused": True, "reason": "no finite deformation gradient"}
+    cap = float(np.percentile(vals, plateau_pct))
+    at_cap = float((vals >= 0.98 * cap).mean())
+    res = {"eps_y": cap, "plateau_fraction": at_cap,
+           "yield_stress": float(2.0 * mu_hat * cap),
+           "plateau_pct": plateau_pct}
+    if at_cap < plateau_frac_min:
+        res.update({"refused": True,
+                    "reason": ("no yield plateau: only "
+                               f"{100 * at_cap:.4f} percent of particle-frames "
+                               "sit at the cap, so this is a lower bound")})
+    else:
+        res["refused"] = False
+    log(f"[ident] yield eps_y={cap:.4e} plateau_frac={at_cap:.2e} "
+        f"yield={res['yield_stress']:.4e} refused={res['refused']}")
+    return res
+
+
+def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
+                      margin_cells: float = 3.0, eps_gamma: float = 0.02,
+                      gd_min: float = 1.0, yield_frac_min: float = 0.97,
+                      log=print) -> dict:
+    """Constant-friction Mode C in 3D: one column, mu = sqrt(J2) / p.
+
+    sigma = -p I + mu * p * (2 D / |gamma_dot|_eps) is linear in mu with the
+    pressure as DATA (the 3D stress trace, the oracle pressure), so the
+    pressure term goes into the known part of the load and the single column is
+    V p (2 D / |gamma_dot|_eps). Only particles that are shearing under positive
+    pressure enter, since the yield relation holds at yield and not below it;
+    yield_frac_min then sets how much of a node's support mass must come from
+    them, the same gate ``grid_assembly.py`` applies to the granular collapse
+    (flow_frac_min there). Requiring all of it drops every node, because roughly
+    a quarter of the particles sit at or below zero pressure on the free surface
+    at any instant.
+
+    The flow direction is read from D rather than from the deviatoric elastic
+    strain the return map actually scales, so this is the rate-form reading of a
+    Drucker-Prager solid, exact only where the two are coaxial. It is the same
+    reading the mu(I) legs of this tree use, and the recovered coefficient is
+    therefore an effective friction.
+    """
+    from common.conventions import (
+        equivalent_shear_rate,
+        pressure_from_cauchy_3d_trace,
+        sym,
+    )
+    from ident.weakform.elastic_grid import assemble_columns_timeweak, solve_elastic_grid
+
+    D = sym(arr["L"])
+    gd = equivalent_shear_rate(D, eps_gamma)
+    p = pressure_from_cauchy_3d_trace(arr["stress"])
+    eye = np.eye(3)[None]
+
+    def columns_fn(f: int):
+        finite = np.isfinite(p[f]) & np.isfinite(D[f]).all(axis=(1, 2))
+        at_yield = finite & (p[f] > 0.0) & (gd[f] > gd_min)
+        # a cohesionless particle at or below zero pressure is stress free:
+        # sand_return_mapping sets F_elastic = U V^T when tr eps >= 0, measured
+        # here as ||sigma|| of order 0.4 Pa against 1e4 Pa in the bulk. Such a
+        # particle is MODELLED (it contributes nothing) rather than invalid, so
+        # it must not gate its nodes out. What would gate a node out is a
+        # positive-pressure particle below yield, whose stress is elastic and
+        # outside this one-column model.
+        free = finite & (p[f] <= 0.0)
+        ok = at_yield | free
+        if at_yield.sum() < 50:
+            return None
+        Vp = arr["volume"][f]
+        gsafe = np.where(gd[f] > 0.0, gd[f], 1.0)
+        flow = 2.0 * D[f] / gsafe[:, None, None]
+        w = np.where(at_yield, Vp * p[f], 0.0)
+        Vsig = w[:, None, None, None] * flow[:, None, :, :]
+        Vsig_known = -w[:, None, None] * eye
+        return Vsig, Vsig_known, ok, gd[f]
+
+    # a time-weak row sums a whole window, so one unusable frame kills it. The
+    # throw starts as a rigid rotation, where D is identically zero and nothing
+    # is at yield, so the frame list starts at the longest contiguous run of
+    # shearing frames rather than at frame zero. The run must stay uniformly
+    # spaced: the temporal weight assumes a constant frame spacing.
+    #
+    # Post-impact gate, added after a measured bias: over the whole throw the
+    # recovery reads phi = 21.97 deg against truth 25 (residual 0.47), because
+    # the impact frames are collisional and the flow direction read from D is
+    # not coaxial with the elastic strain the return map scales (the caveat in
+    # this docstring realized). The gate keeps frames after the kinetic energy
+    # has passed its global peak and decayed below a fraction of it, i.e. the
+    # frictional spreading regime, the model's domain. Measured sweep on the
+    # sand cube (truth phi = 25): frac 0.5 -> 24.66 (resid 0.083), 0.2 -> 25.22
+    # (0.042), 0.1 -> 25.06 (0.025), below 0.1 the window refuses. 0.1 ships,
+    # relaxing to 0.2 then 0.5 when the trajectory is too short for the window.
+    ke = 0.5 * np.einsum("p,fpi->f", arr["mass"], arr["v"] ** 2)
+    k_peak = int(np.argmax(ke))
+    frames, ke_frac_used = [], None
+    for frac in (0.1, 0.2, 0.5):
+        decayed = np.flatnonzero(ke <= frac * ke[k_peak])
+        k_start = int(decayed[decayed > k_peak][0]) if np.any(decayed > k_peak) else k_peak
+        all_frames = [f for f in range(0, arr["x"].shape[0], frame_stride) if f >= k_start]
+        counts = [int(((gd[f] > gd_min) & (p[f] > 0.0)).sum()) for f in all_frames]
+        frames = _longest_run(all_frames, counts, 50)
+        if len(frames) >= window_frames:
+            ke_frac_used = frac
+            break
+
+    if len(frames) < window_frames:
+        return {"refused": True,
+                "reason": (f"only {len(frames)} contiguous shearing frames, "
+                           f"fewer than the {window_frames}-frame window"),
+                "n_rows": 0, "n_rows_before_gating": 0}
+    sysm = assemble_columns_timeweak(
+        arr["x"], arr["v"], arr["mass"], arr["g"],
+        arr["frame_dt"] * frame_stride, arr["n_grid"], arr["grid_lim"],
+        columns_fn, n_columns=1, frames=frames, window_frames=window_frames,
+        collider_planes=wall_planes(arr["n_grid"], arr["grid_lim"]),
+        collider_margin_cells=margin_cells, valid_frac_min=yield_frac_min)
+    if sysm.n_rows < 8:
+        return {"refused": True, "reason": "no surviving rows",
+                "n_rows": sysm.n_rows, "yield_frac_min": yield_frac_min,
+                "n_rows_before_gating": sysm.n_rows_before_gating}
+    out = solve_elastic_grid(sysm)
+    mu_c = out["theta"][0]
+    out.update({"ke_frac_used": ke_frac_used,
+                "mu_c": mu_c, "friction_angle": mu_to_friction(mu_c),
+                "refused": False, "row_survival": sysm.row_survival,
+                "n_rows_before_gating": sysm.n_rows_before_gating,
+                "yield_frac_min": yield_frac_min, "gd_min": gd_min,
+                "n_shearing_frames": len(frames),
+                "shear_rate_coverage": list(sysm.strain_coverage)})
+    log(f"[ident] friction mu_c={mu_c:.4f} -> phi={out['friction_angle']:.2f} deg "
+        f"rows={sysm.n_rows} cond={out['cond_AtA']:.2e}")
+    return out
+
+
+def identify_eos(arr: dict, gamma: float = 1.1, window_frames: int = 26,
+                 frame_stride: int = 2, margin_cells: float = 3.0,
+                 cond_max: float = 1.0e12, log=print) -> dict:
+    """Bulk modulus of the weakly compressible EOS from the volumetric weak form.
+
+    ``kirchoff_stress_water`` sets Cauchy = -bulk (J^-gamma - 1) I, so the
+    single stress column is -(J^-gamma - 1) I and the unknown is the bulk
+    modulus. Water is a hard case for identification: the compression the throw
+    produces is tiny, so the column can be starved. The conditioning and the
+    realized volumetric strain are reported and a starved solve refuses.
+    """
+    from ident.weakform.elastic_grid import assemble_columns_timeweak, solve_elastic_grid
+
+    eye = np.eye(3)[None]
+    Jall = []
+
+    def columns_fn(f: int):
+        Vp = arr["volume"][f]
+        J = Vp / np.maximum(arr["vol0"], 1e-30)
+        ok = np.isfinite(J) & (J > 1e-6)
+        if ok.sum() < 50:
+            return None
+        Jall.append(J[ok])
+        col = -(np.power(np.clip(J, 1e-6, None), -gamma) - 1.0)
+        Vsig = (Vp * col)[:, None, None, None] * eye[:, None, :, :]
+        return Vsig, None, ok, np.abs(J - 1.0)
+
+    frames = list(range(0, arr["x"].shape[0], frame_stride))
+    sysm = assemble_columns_timeweak(
+        arr["x"], arr["v"], arr["mass"], arr["g"],
+        arr["frame_dt"] * frame_stride, arr["n_grid"], arr["grid_lim"],
+        columns_fn, n_columns=1, frames=frames, window_frames=window_frames,
+        collider_planes=wall_planes(arr["n_grid"], arr["grid_lim"]),
+        collider_margin_cells=margin_cells)
+    if sysm.n_rows < 8:
+        return {"refused": True, "reason": "no surviving rows",
+                "n_rows": sysm.n_rows,
+                "n_rows_before_gating": sysm.n_rows_before_gating}
+    out = solve_elastic_grid(sysm)
+    bulk = out["theta"][0]
+    Jc = np.concatenate(Jall) if Jall else np.ones(1)
+    out.update({"bulk_modulus": bulk, "gamma": gamma, "refused": False,
+                "row_survival": sysm.row_survival,
+                "n_rows_before_gating": sysm.n_rows_before_gating,
+                "volumetric_strain_p99": float(np.percentile(np.abs(Jc - 1.0), 99))})
+    if not np.isfinite(bulk) or bulk <= 0.0 or out["cond_AtA"] > cond_max:
+        out.update({"refused": True,
+                    "reason": (f"volumetric column starved: bulk={bulk:.3e}, "
+                               f"cond={out['cond_AtA']:.3e}")})
+    log(f"[ident] eos bulk={bulk:.4e} rows={sysm.n_rows} "
+        f"cond={out['cond_AtA']:.2e} refused={out['refused']}")
+    return out
+
+
+def theta_for_engine(material: str, ident: dict) -> tuple[dict, list[str]]:
+    """Recovered parameters in the engine's own arguments, plus what was refused.
+
+    A refused parameter falls back to its known-class prior value, which is the
+    truth entry here, and the fallback is named in the returned list so the
+    report states it rather than hiding it.
+    """
+    from ident.weakform.elastic_grid import moduli_to_E_nu
+    truth = MATERIALS[material]["truth"]
+    theta: dict = {}
+    refused: list[str] = []
+    if material in ("jelly", "plasticine"):
+        el = ident.get("elastic", {})
+        if el.get("refused", True):
+            refused += ["E", "nu"]
+            theta.update({"E": truth["E"], "nu": truth["nu"]})
+        else:
+            E, nu = moduli_to_E_nu(el["mu"], el["lam"])
+            theta.update({"E": E, "nu": nu})
+        if material == "plasticine":
+            y = ident.get("yield", {})
+            if y.get("refused", True):
+                refused.append("yield_stress")
+                theta["yield_stress"] = truth["yield_stress"]
+            else:
+                theta["yield_stress"] = y["yield_stress"]
+    elif material == "sand":
+        fr = ident.get("friction", {})
+        if fr.get("refused", True):
+            refused.append("friction_angle")
+            theta["friction_angle"] = truth["friction_angle"]
+        else:
+            theta["friction_angle"] = fr["friction_angle"]
+        # the elastic pair below yield is not excited by this throw; prior-fixed
+        refused += ["E", "nu"]
+        theta.update({"E": truth["E"], "nu": truth["nu"]})
+    elif material == "water":
+        eos = ident.get("eos", {})
+        if eos.get("refused", True):
+            refused.append("bulk_modulus")
+            theta["bulk_modulus"] = bulk_from_E_nu(truth["E"], truth["nu"])
+        else:
+            theta["bulk_modulus"] = eos["bulk_modulus"]
+        theta.update({"E": truth["E"], "nu": truth["nu"]})
+    return theta, refused
+
+
+# Time-weak window length, in sampled frames, per material. Longer is better
+# for the elastic pair, whose remaining error is the temporal quadrature; sand
+# wants a short window because only the frames after the throw starts shearing
+# are usable and a row must fit entirely inside them.
+WINDOW_FRAMES: dict[str, int] = {"jelly": 26, "plasticine": 26,
+                                 "sand": 10, "water": 16}
+
+
+def stage_identify(material: str, n_grid: int = N_GRID,
+                   window_frames: int | None = None, log=print) -> dict:
+    """Recover the law from the CUBE trajectory alone."""
+    if window_frames is None:
+        window_frames = WINDOW_FRAMES[material]
+    cube = dump_path(material, "cube", "truth")
+    if not cube.exists():
+        raise SystemExit(f"missing {cube}; run the gen stage first")
+    arr = _load_arrays(cube)
+    ident: dict = {"source_dump": cube.name, "n_grid": arr["n_grid"]}
+    if material in ("jelly", "plasticine"):
+        ident["elastic"] = identify_elastic(arr, window_frames=window_frames, log=log)
+        if material == "plasticine" and not ident["elastic"].get("refused", True):
+            ident["yield"] = identify_yield(arr, ident["elastic"]["mu"], log=log)
+    elif material == "sand":
+        ident["friction"] = identify_friction(arr, window_frames=window_frames, log=log)
+    elif material == "water":
+        ident["eos"] = identify_eos(arr, window_frames=window_frames, log=log)
+    theta, refused = theta_for_engine(material, ident)
+    ident["theta_engine"] = theta
+    ident["refused_parameters"] = refused
+    ident["truth"] = MATERIALS[material]["truth"]
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / f"identify_{material}.json").write_text(
+        json.dumps(ident, indent=2, default=float))
+    log(f"[ident] theta={theta} refused={refused}")
+    return ident
+
+
+def stage_rollout(material: str, shapes: list[str], force: bool = False,
+                  n_grid: int = N_GRID, vel: str = "preset", log=print) -> dict:
+    """Re-simulate every scene at the recovered law and score NCLaw's metric."""
+    ipath = OUT / f"identify_{material}.json"
+    if not ipath.exists():
+        raise SystemExit(f"missing {ipath}; run the identify stage first")
+    ident = json.loads(ipath.read_text())
+    theta = ident["theta_engine"]
+    rpath_prev = OUT / f"rollout_{material}.json"
+    scores: dict = json.loads(rpath_prev.read_text()) if rpath_prev.exists() else {}
+    for shape in shapes:
+        truth = dump_path(material, shape, "truth", vel)
+        if not truth.exists():
+            log(f"[rollout] skip {shape}: no truth dump")
+            continue
+        pred = dump_path(material, shape, "rec", vel)
+        if not pred.exists() or force:
+            run_scene(material, shape, pred, theta=theta, n_grid=n_grid, vel=vel, log=log)
+        s = nclaw_position_mse(truth, pred)
+        s["role"] = "reconstruction" if shape == "cube" else "generalization"
+        s["vel"] = vel
+        scores[shape if vel == "preset" else f"{shape}@{vel}"] = s
+        log(f"[rollout] {material}/{shape} ({s['role']}) N={s['n_particles']} "
+            f"MSE={s['mse']:.3e}  final-frame {s['mse_final_frame']:.3e}  "
+            f"RMS {s['rmse_mm']:.2f} mm")
+    (OUT / f"rollout_{material}.json").write_text(
+        json.dumps(scores, indent=2, default=float))
+    return scores
+
+
+# ---------------------------------------------------------------------------
+# Report
+# ---------------------------------------------------------------------------
+
+# NCLaw's published position MSE, their own method's row ("ours"), in squared
+# metres on a 1.0 m box. Reconstruction is Table 1 (page 5); the three
+# generalization axes are Table 2 (page 7), tasks (a) longer horizon,
+# (b) initial velocity, (c) geometry. Their per-table Overall columns do not
+# recompute from the cells, so only the per-cell values are used here. A cell
+# left as None is not published for the matched case and prints blank rather
+# than being approximated. The engine caveat below travels with the table.
+NCLAW_PUBLISHED: dict[str, dict[str, float | None]] = {
+    "jelly": {"reconstruction": 2.4e-4, "generalization": 4.1e-4,
+              "time": 9.8e-4, "velocity": 2.4e-4},
+    "plasticine": {"reconstruction": 6.5e-5, "generalization": 2.3e-4,
+                   "time": 1.4e-4, "velocity": 4.6e-5},
+    "sand": {"reconstruction": 2.6e-5, "generalization": 3.6e-4,
+             "time": 4.2e-5, "velocity": 6.5e-5},
+    "water": {"reconstruction": 2.0e-5, "generalization": 2.4e-4,
+              "time": 3.5e-4, "velocity": 1.9e-5},
+}
+# Strongest published baseline, for context on the reconstruction column: their
+# "neural" row beats them on jelly reconstruction at 1.2e-5. Their labelled and
+# system-identification oracles sit below the rule in the same tables and are
+# excluded from their own shading, so they are not comparison targets here.
+NCLAW_GEOMETRY_CONFOUND = (
+    "NCLaw's geometry column, task (c), changes four things at once against "
+    "their reconstruction column: the mesh, the particle count (about 30k), the "
+    "grid (20 to 32) and the horizon (1000 to 2000 steps), and it also switches "
+    "the throw from vel/preset to vel/mild, linear [1.0, -1.5, -1.5] and angular "
+    "[1, 1, 1]. Our generalization column changes the mesh alone, at one grid, "
+    "one horizon and the preset throw, so it isolates geometry where theirs does "
+    "not."
+)
+ENGINE_CAVEAT = (
+    "NCLaw's column is their published number from their own MPM engine, grid, "
+    "particle count and time step. Ours is our engine's truth against our "
+    "engine's rollout on identical particle clouds. The protocol is matched "
+    "(scene, throw, walls, duration, metric); the two engines are not the same "
+    "engine, so read the columns as two self-consistent measurements of the "
+    "same experiment rather than as a head-to-head on one simulator."
+)
+
+
+def stage_report(material: str, log=print) -> dict:
+    """results.json, report.md and the comparison figure for one material."""
+    ipath = OUT / f"identify_{material}.json"
+    rpath = OUT / f"rollout_{material}.json"
+    if not ipath.exists():
+        raise SystemExit(f"missing {ipath}; run the identify stage first")
+    ident = json.loads(ipath.read_text())
+    scores = json.loads(rpath.read_text()) if rpath.exists() else {}
+    truth = MATERIALS[material]["truth"]
+
+    recovered_vs_truth = {}
+    for k, v in ident["theta_engine"].items():
+        t = truth.get(k)
+        if k == "bulk_modulus" and t is None:
+            t = bulk_from_E_nu(truth["E"], truth["nu"])
+        recovered_vs_truth[k] = {
+            "recovered": v, "truth": t,
+            "rel_err": (abs(v / t - 1.0) if t not in (None, 0.0) else None),
+            "prior_fixed": k in ident.get("refused_parameters", []),
+        }
+
+    diag = {}
+    for key in ("elastic", "yield", "friction", "eos"):
+        if key in ident:
+            d = ident[key]
+            diag[key] = {kk: d.get(kk) for kk in
+                         ("n_rows", "n_rows_before_gating", "row_survival",
+                          "cond_AtA", "cond_AtA_scaled", "residual_rel",
+                          "effective_rank", "strain_coverage",
+                          "shear_rate_coverage", "volumetric_strain_p99",
+                          "plateau_fraction", "refused", "reason")
+                         if kk in d}
+
+    results = {
+        "schema_version": "nclaw-suite-1.0",
+        "material": material,
+        "git_rev_video2sim": _git_rev(ROOT),
+        "git_rev_mpm_engine": _git_rev(ROOT / "mpm_engine"),
+        "protocol": {
+            "grid_lim": GRID_LIM, "n_grid": ident.get("n_grid", N_GRID),
+            "bound_cells": BOUND_CELLS, "collider_bc": "slip (freeslip)",
+            "t_end": T_END, "n_frames": N_FRAMES,
+            "gravity": list(GRAVITY), "lin_vel": list(LIN_VEL),
+            "ang_vel": list(ANG_VEL),
+            "rotation_yup_to_zup": R_YUP_TO_ZUP.tolist(),
+            "nclaw_held_out_shape": NCLAW_HELD_OUT_SHAPE[material],
+        },
+        "identified_from": ident.get("source_dump"),
+        "recovered_vs_truth": recovered_vs_truth,
+        "refused_parameters": ident.get("refused_parameters", []),
+        "diagnostics": diag,
+        "mse": {s: {"role": v["role"], "mse": v["mse"],
+                    "mse_final_frame": v["mse_final_frame"],
+                    "rmse_mm": v["rmse_mm"], "n_particles": v["n_particles"],
+                    "n_frames": v["n_frames"]}
+                for s, v in scores.items()},
+        "nclaw_published": NCLAW_PUBLISHED[material],
+        "nclaw_published_source": ("their own method's row; reconstruction from "
+                                   "Table 1 page 5, generalization axes from "
+                                   "Table 2 page 7 tasks (a) time, "
+                                   "(b) velocity, (c) geometry"),
+        "engine_caveat": ENGINE_CAVEAT,
+        "nclaw_geometry_confound": NCLAW_GEOMETRY_CONFOUND,
+        "metric": ("mean over particles and coordinates of the squared position "
+                   "difference in the unit box, averaged over every fifth frame"),
+    }
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / f"results_{material}.json").write_text(
+        json.dumps(results, indent=2, default=float))
+
+    lines = [f"# NCLaw-matched comparison: {material}", "",
+             "Law identified from the cube throw alone, by a convex weak-form",
+             "solve on the grid-consistent momentum residual. The simulator is",
+             "never differentiated.", "",
+             "## Recovered parameters", "",
+             "| parameter | recovered | truth | rel err | source |",
+             "| --- | --- | --- | --- | --- |"]
+    for k, v in recovered_vs_truth.items():
+        rel = "" if v["rel_err"] is None else f"{100 * v['rel_err']:.2f} %"
+        src = "prior (refused)" if v["prior_fixed"] else "identified"
+        t = "" if v["truth"] is None else f"{v['truth']:.4e}"
+        lines += [f"| {k} | {v['recovered']:.4e} | {t} | {rel} | {src} |"]
+    if results["refused_parameters"]:
+        lines += ["", "Refused and held at the known-class prior: "
+                  + ", ".join(results["refused_parameters"]) + "."]
+
+    lines += ["", "## Position MSE (NCLaw's metric)", "",
+              "| scene | role | ours | NCLaw published | particles |",
+              "| --- | --- | --- | --- | --- |"]
+    for s, v in results["mse"].items():
+        pub = NCLAW_PUBLISHED[material].get(v["role"])
+        pubs = "" if pub is None else f"{pub:.2e}"
+        lines += [f"| {s} | {v['role']} | {v['mse']:.3e} | {pubs} | "
+                  f"{v['n_particles']} |"]
+    lines += ["", f"NCLaw's own held-out shape for {material} is "
+              f"{NCLAW_HELD_OUT_SHAPE[material]}.", "", ENGINE_CAVEAT, "",
+              NCLAW_GEOMETRY_CONFOUND, ""]
+    (OUT / f"report_{material}.md").write_text("\n".join(lines) + "\n")
+
+    if results["mse"]:
+        _figure(material, results)
+    log("\n".join(lines))
+    log(f"[report] wrote {OUT / f'results_{material}.json'} and "
+        f"{OUT / f'report_{material}.md'}")
+    return results
+
+
+def _figure(material: str, results: dict) -> Path:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    names = list(results["mse"].keys())
+    ours = [results["mse"][n]["mse"] for n in names]
+    pub = [NCLAW_PUBLISHED[material].get(results["mse"][n]["role"]) for n in names]
+    fig, ax = plt.subplots(1, 2, figsize=(11.5, 4.4))
+
+    xs = np.arange(len(names))
+    ax[0].bar(xs - 0.19, ours, width=0.36, color="#1c7ed6", label="ours")
+    have = [i for i, p in enumerate(pub) if p is not None]
+    if have:
+        ax[0].bar(xs[have] + 0.19, [pub[i] for i in have], width=0.36,
+                  color="#e8590c", label="NCLaw published")
+    ax[0].set_yscale("log")
+    ax[0].set_xticks(xs)
+    ax[0].set_xticklabels([f"{n}\n({results['mse'][n]['role'][:5]})" for n in names])
+    ax[0].set_ylabel("position MSE (unit box)")
+    ax[0].set_title(f"(a) {material}: identify from the cube, roll out on shapes")
+    ax[0].legend(fontsize=8)
+    ax[0].grid(alpha=0.3, axis="y", which="both")
+
+    for n in names:
+        s = json.loads((OUT / f"rollout_{material}.json").read_text())[n]
+        ax[1].semilogy(np.maximum(s["per_frame"], 1e-14), lw=1.8, label=n)
+    ax[1].set_xlabel("frame")
+    ax[1].set_ylabel("position MSE")
+    ax[1].set_title("(b) error growth over the throw")
+    ax[1].legend(fontsize=8)
+    ax[1].grid(alpha=0.3, which="both")
+    fig.tight_layout()
+    p = OUT / f"nclaw_{material}.png"
+    fig.savefig(p, dpi=130)
+    plt.close(fig)
+    return p
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("stage", choices=["gen", "identify", "rollout", "report", "all"])
+    ap.add_argument("--material", default="jelly", choices=sorted(MATERIALS))
+    ap.add_argument("--shapes", default="cube,bunny,spot,dragon")
+    ap.add_argument("--n-grid", type=int, default=N_GRID)
+    ap.add_argument("--window-frames", type=int, default=0,
+                    help="0 uses the per-material default in WINDOW_FRAMES")
+    ap.add_argument("--vel", default="preset", choices=sorted(VELS),
+                    help="throw preset: NCLaw vel/preset or their geometry-eval vel/mild")
+    ap.add_argument("--force", action="store_true",
+                    help="re-run scenes whose dumps already exist")
+    a = ap.parse_args(argv)
+    shapes = [s.strip() for s in a.shapes.split(",") if s.strip()]
+    bad = [s for s in shapes if s not in SHAPES]
+    if bad:
+        raise SystemExit(f"unknown shapes: {bad}; known: {sorted(SHAPES)}")
+
+    if a.stage in ("gen", "all"):
+        stage_gen(a.material, shapes, force=a.force, n_grid=a.n_grid, vel=a.vel)
+    if a.stage in ("identify", "all"):
+        stage_identify(a.material, n_grid=a.n_grid,
+                       window_frames=a.window_frames or None)
+    if a.stage in ("rollout", "all"):
+        stage_rollout(a.material, shapes, force=a.force, n_grid=a.n_grid, vel=a.vel)
+    if a.stage in ("report", "all"):
+        stage_report(a.material)
+
+
+if __name__ == "__main__":
+    main()

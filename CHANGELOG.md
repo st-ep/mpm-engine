@@ -4,6 +4,13 @@
 
 ### Added
 
+- `experiments/nclaw/`: the full NCLaw-matched comparison suite (scene
+  generation at their published configs, weak-form identification, rollout,
+  scoring in their metric, matplotlib and Blender side-by-side renderers,
+  dump writer and L-convention probe), migrated from the research tree so the
+  comparison reproduces from this repo plus a clone of NCLaw (set NCLAW_DIR
+  or place the clone in a parent or sibling directory). Verified: the jelly
+  identification reproduces bit for bit after migration.
 - `ident/weakform/elastic_grid.py`: grid-consistent (Bubnov-Galerkin) weak-form
   assembly on the 3D quadratic B-spline grid basis, for laws linear in theta.
   The fixed-corotated elastic pair (mu, lambda) is the first client and names the
