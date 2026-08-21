@@ -66,6 +66,8 @@ KNOWN_LAWS = (
     "vonmises",         # corotated elasticity plus a von Mises return map
     "drucker_prager",   # corotated elasticity plus a Drucker-Prager return map
     "eos_fluid",        # weakly compressible pressure-only fluid
+    "tabulated_mu_i",   # mu(I) read from a table: a recovered curve, re-simulated
+    "tabulated_viscous",  # eta_app(gamma_dot) read from a table, likewise
 )
 
 REQUIRED_ARRAYS = {

@@ -153,6 +153,35 @@ MATERIALS: dict[str, dict] = {
 }
 
 
+# Rollout-only entries, for re-simulating a recovered CURVE instead of a named
+# scalar. The engine's tabulated materials read the curve off the model as a
+# table, so a function-encoder recovery (sim/fe_ls_baseline.py in the parent
+# tree) rolls out through these. They carry no NCLaw published column and no
+# identify leg of their own: the identify and report stages take the four
+# physical materials above, and these entries only ever reach run_scene.
+MATERIALS["sand_table"] = {
+    "engine": "tabulated_mu_i", "law": "tabulated_mu_i", "rho": 1000.0,
+    # E, nu and the grain scales of the sand truth run, so the tabulated rollout
+    # differs from it in the friction law alone; d and rho_s fix the inertial
+    # number the table is read at and must match the identification's.
+    "truth": {"E": 1.0e6, "nu": 0.2,
+              "grain_diameter": 1.0e-3, "grain_density": 1000.0},
+    "theta_names": ["mu_table"],
+}
+MATERIALS["visc_table"] = {
+    "engine": "tabulated_viscous", "law": "tabulated_viscous", "rho": 1000.0,
+    "truth": {"E": 1.0e5, "nu": 0.3},
+    "theta_names": ["eta_table"],
+}
+
+# Keys the engine consumes verbatim. A recovered curve is DATA (a table plus the
+# grid it is read on), not a named scalar, so it rides through engine_params
+# untouched; the grain scales travel with it because they define the inertial
+# number the table is indexed by.
+ENGINE_PASSTHROUGH = ("eta_table", "eta_table_smin", "eta_table_smax",
+                      "grain_diameter", "grain_density", "bulk_modulus")
+
+
 def bulk_from_E_nu(E: float, nu: float) -> float:
     """K = E / (3 (1 - 2 nu)), the standard mapping; recorded because NCLaw's
     water config states (E, nu) while our fluid material takes a bulk modulus."""
@@ -232,6 +261,9 @@ def engine_params(material: str, theta: dict | None = None) -> dict:
         kw["softening"] = 0.0          # NCLaw's von Mises has no damage term
     if "friction_angle" in p:
         kw["friction_angle"] = p["friction_angle"]
+    for key in ENGINE_PASSTHROUGH:
+        if key in p:
+            kw[key] = p[key]
     return kw
 
 
@@ -1154,7 +1186,9 @@ def _figure(material: str, results: dict) -> Path:
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("stage", choices=["gen", "identify", "rollout", "report", "all", "cross"])
-    ap.add_argument("--material", default="jelly", choices=sorted(MATERIALS))
+    # the four physical materials only: MATERIALS also holds the rollout-only
+    # table entries, which have no identify leg and no published column
+    ap.add_argument("--material", default="jelly", choices=sorted(NCLAW_PUBLISHED))
     ap.add_argument("--shapes", default="cube,bunny,spot,dragon")
     ap.add_argument("--n-grid", type=int, default=N_GRID)
     ap.add_argument("--window-frames", type=int, default=0,

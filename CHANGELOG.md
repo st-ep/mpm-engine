@@ -4,6 +4,27 @@
 
 ### Added
 
+- `experiments/nclaw/suite.py`: two rollout-only `MATERIALS` entries,
+  `sand_table` (fork material 13, tabulated mu(I)) and `visc_table` (fork
+  material 12, tabulated apparent viscosity), plus an `ENGINE_PASSTHROUGH` list
+  that lets `engine_params` carry a recovered CURVE through to the engine as
+  data (the table, its log-grid ends, and the grain scales that fix the inertial
+  number the table is read at). This is what lets a function-encoder recovery be
+  re-simulated on the NCLaw scenes without a parametric fit; the consumer is
+  `sim/fe_ls_baseline.py` in the parent tree. The entries have no identify leg
+  and no NCLaw published column, so the `--material` choices are now the four
+  physical materials explicitly rather than every key of the dict.
+- `ident/io/schema.py`: `tabulated_mu_i` and `tabulated_viscous` law tags, which
+  the dumps those rollouts write carry. Gate code branches on `constant` and
+  `pouliquen` and ignores the rest, so nothing existing changes.
+- `tests/test_tabulated_mu_i.py`: the tabulated mu(I) material (13) at the
+  Drucker-Prager cone constant reproduces material 2 on a column collapse to
+  3.4e-6 m over a 0.21 m runout, and halving the tabulated friction spreads the
+  column further. This is what makes a recovered-curve rollout comparable to a
+  Drucker-Prager truth trajectory rather than a comparison across two return
+  maps; measured at full scale on the NCLaw grid-20 cube as well, position MSE
+  1.1e-13.
+
 - `experiments/nclaw/ingest.py`: the ingestion path for trajectories generated
   by NCLaw's OWN simulator, so their data feeds our identification and a
   cross-engine rollout without touching the solve code.
