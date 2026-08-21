@@ -20,12 +20,16 @@ Stages:
   identify  recover the law from the CUBE trajectory only
   rollout   re-simulate every scene at the recovered law, score the MSE
   report    results.json plus report.md plus the comparison figure
+  cross     the cross-engine chain on a folder of THEIR trajectories: ingest,
+            identify, roll out from their frame-0 cloud, score
 
 Run:
   .venv/bin/python -m experiments.nclaw.suite gen      --material jelly --shapes cube,bunny
   .venv/bin/python -m experiments.nclaw.suite identify --material jelly
   .venv/bin/python -m experiments.nclaw.suite rollout  --material jelly --shapes cube,bunny
   .venv/bin/python -m experiments.nclaw.suite report   --material jelly
+  .venv/bin/python -m experiments.nclaw.suite cross    --material jelly \\
+      --nclaw-dir /path/to/their/state_root --manifest manifest.json
 """
 from __future__ import annotations
 
@@ -45,6 +49,7 @@ OUT = ROOT / "out" / "nclaw_suite"
 DUMPS = OUT / "dumps"
 import os
 
+
 def _find_nclaw() -> Path:
     """The NCLaw clone (meshes + configs). NCLAW_DIR wins; then common layouts."""
     cands = [Path(os.environ["NCLAW_DIR"])] if "NCLAW_DIR" in os.environ else []
@@ -55,7 +60,15 @@ def _find_nclaw() -> Path:
     raise SystemExit("NCLaw clone not found; clone github NCLaw next to this repo "
                      "or set NCLAW_DIR to it (needed for their meshes and configs)")
 
-ASSETS = _find_nclaw() / "nclaw" / "assets"
+
+def assets() -> Path:
+    """Their asset folder, resolved on first use.
+
+    Looked up lazily so that importing this module needs no clone: the ingest
+    path (experiments/nclaw/ingest.py) reads their trajectories and their
+    rotation from here and touches no mesh.
+    """
+    return _find_nclaw() / "nclaw" / "assets"
 
 # ---------------------------------------------------------------------------
 # Their scene, in their frame, then rotated once into ours
@@ -151,7 +164,7 @@ def _git_rev(path: Path) -> str | None:
         return subprocess.check_output(
             ["git", "-C", str(path), "rev-parse", "HEAD"],
             text=True, stderr=subprocess.DEVNULL).strip()
-    except Exception:                                          # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -179,7 +192,7 @@ def seed_cloud(shape: str, n_grid: int = N_GRID, grid_lim: float = GRID_LIM
         pts = pts + CENTER
     else:
         import trimesh
-        m = trimesh.load(ASSETS / f"{cfg['mesh']}.obj", force="mesh")
+        m = trimesh.load(assets() / f"{cfg['mesh']}.obj", force="mesh")
         m.apply_scale(cfg["size"] / m.extents.max())
         pts = np.asarray(m.voxelized(pitch=h).fill().points, dtype=np.float64)
         pts += np.random.default_rng(0).uniform(-0.2 * h, 0.2 * h, pts.shape)
@@ -223,20 +236,69 @@ def engine_params(material: str, theta: dict | None = None) -> dict:
 
 
 def _wave_speed(material: str, kw: dict) -> float:
+    """The p-wave speed the time step is sized from; refuses a non-physical law.
+
+    The guard is a measurement, not caution: handing the engine an identified
+    pair with nu outside (-1, 0.5) makes lam + 2 mu negative, the wave speed
+    NaN, the time step NaN, and the first p2g2p writes out of the grid, which
+    on this machine is a bus error rather than an exception. A rollout at an
+    unphysical law has to stop here and say so.
+    """
     rho = MATERIALS[material]["rho"]
     if MATERIALS[material]["engine"] == "fluid":
-        return float(np.sqrt(kw["bulk_modulus"] / rho))
-    E, nu = kw["E"], kw["nu"]
+        bulk = float(kw["bulk_modulus"])
+        if not np.isfinite(bulk) or bulk <= 0.0:
+            raise ValueError(f"non-physical bulk modulus for a rollout: {bulk!r}")
+        return float(np.sqrt(bulk / rho))
+    E, nu = float(kw["E"]), float(kw["nu"])
+    if not (np.isfinite(E) and E > 0.0) or not (np.isfinite(nu) and -1.0 < nu < 0.5):
+        raise ValueError(
+            f"non-physical elastic pair for a rollout: E={E!r}, nu={nu!r}. "
+            "nu must lie in (-1, 0.5) and E must be positive, or the wave speed "
+            "and the time step come out NaN.")
     lam = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
     mu = E / (2.0 * (1.0 + nu))
     return float(np.sqrt((lam + 2.0 * mu) / rho))     # p-wave speed
 
 
+def cloud_from_dump(path: str | Path) -> dict:
+    """Frame-0 state and run geometry of a dump, for a rollout in 1:1 particle
+    correspondence with that trajectory.
+
+    This is what makes the NCLaw comparison genuinely cross-engine: seeded from
+    THEIR frame-0 cloud and THEIR frame-0 velocities, our rollout is compared
+    particle by particle against their own trajectory, with no resampling and no
+    correspondence guesswork.
+    """
+    from ident.io.schema import validate_dump_schema
+    meta = validate_dump_schema(path)
+    d = np.load(path)
+    times = np.asarray(d["times"], dtype=float)
+    return {
+        "pts": np.ascontiguousarray(d["x"][0].astype(np.float32)),
+        "vol0": np.ascontiguousarray(
+            (d["volume0"] if "volume0" in d.files else d["volume"][0]).astype(np.float32)),
+        "v0": np.ascontiguousarray(d["v"][0].astype(np.float32)),
+        "n_frames": int(times.shape[0]) - 1,
+        "t_end": float(times[-1] - times[0]),
+        "n_grid": int(meta.extra["n_grid"]),
+        "grid_lim": float(meta.extra["grid_lim"]),
+        "source": str(Path(path).name),
+    }
+
+
 def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = None,
               n_grid: int = N_GRID, grid_lim: float = GRID_LIM,
               t_end: float = T_END, n_frames: int = N_FRAMES,
-              cfl: float = 0.35, vel: str = "preset", log=print) -> Path:
-    """One truth or rollout trajectory, dumped schema-valid with F and V0."""
+              cfl: float = 0.35, vel: str = "preset", cloud: dict | None = None,
+              log=print) -> Path:
+    """One truth or rollout trajectory, dumped schema-valid with F and V0.
+
+    ``cloud`` (from ``cloud_from_dump``) replaces the analytic seeding with a
+    provided particle cloud: frame-0 positions, reference volumes and
+    velocities, plus that trajectory's grid and horizon. Everything downstream
+    is unchanged, so a rollout on their cloud is scored by the same metric.
+    """
     import warp as wp
     wp.config.quiet = True
     wp.init()
@@ -246,8 +308,13 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
     from experiments.nclaw.probe_l_convention import L_CONVENTION_STRING
     from warpmpm.kernels import MPM_Simulator_WARP
 
-    pts, vol0 = seed_cloud(shape, n_grid, grid_lim)
-    v0 = throw_velocity(pts, vel)
+    if cloud is None:
+        pts, vol0 = seed_cloud(shape, n_grid, grid_lim)
+        v0 = throw_velocity(pts, vel)
+    else:
+        pts, vol0, v0 = cloud["pts"], cloud["vol0"], cloud["v0"]
+        n_grid, grid_lim = cloud["n_grid"], cloud["grid_lim"]
+        t_end, n_frames = cloud["t_end"], cloud["n_frames"]
     kw = engine_params(material, theta)
     dx = grid_lim / n_grid
     frame_dt = t_end / n_frames
@@ -283,10 +350,12 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
         theta_true=None, l_convention=L_CONVENTION_STRING, store_F=True,
         extra={"material": material, "shape": shape, "n_grid": n_grid,
                "grid_lim": grid_lim, "dt": dt, "substeps_per_frame": substeps,
-               "gravity": list(GRAVITY), "vel_name": vel,
+               "gravity": list(GRAVITY),
+               "vel_name": vel if cloud is None else "seeded_from_cloud",
                "lin_vel": [float(x) for x in VELS[vel][0]],
                "ang_vel": [float(x) for x in VELS[vel][1]],
                "bound_cells": BOUND_CELLS,
+               "seeded_from": None if cloud is None else cloud["source"],
                "collider_bc": "slip", "recovered": theta is not None})
     t0 = time.time()
     step = 0
@@ -541,6 +610,18 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
     )
     from ident.weakform.elastic_grid import assemble_columns_timeweak, solve_elastic_grid
 
+    # the pressure is DATA to this leg, read from the 3D stress trace. An
+    # ingested folder that carries no stress channel has no oracle pressure, and
+    # the honest answer is a refusal naming the missing channel rather than a
+    # silent hydrostatic substitution.
+    if not arr["meta"].has_pressure:
+        return {"refused": True, "n_rows": 0, "n_rows_before_gating": 0,
+                "reason": ("no oracle pressure: the dump's pressure_source is "
+                           f"{arr['meta'].pressure_source!r}, so the stress trace this "
+                           "leg needs is absent. Supply a stress channel or state a "
+                           "pressure closure; nothing is substituted here."),
+                "pressure_source": arr["meta"].pressure_source}
+
     D = sym(arr["L"])
     gd = equivalent_shear_rate(D, eps_gamma)
     p = pressure_from_cauchy_3d_trace(arr["stress"])
@@ -736,11 +817,17 @@ WINDOW_FRAMES: dict[str, int] = {"jelly": 26, "plasticine": 26,
 
 
 def stage_identify(material: str, n_grid: int = N_GRID,
-                   window_frames: int | None = None, log=print) -> dict:
-    """Recover the law from the CUBE trajectory alone."""
+                   window_frames: int | None = None, dump: str | Path | None = None,
+                   tag: str | None = None, log=print) -> dict:
+    """Recover the law from ONE trajectory: the cube throw by default.
+
+    ``dump`` points the same legs at another schema-valid trajectory, which is
+    how an ingested NCLaw folder is identified from; ``tag`` names the results
+    file so an ingested run does not overwrite the suite's own.
+    """
     if window_frames is None:
         window_frames = WINDOW_FRAMES[material]
-    cube = dump_path(material, "cube", "truth")
+    cube = Path(dump) if dump is not None else dump_path(material, "cube", "truth")
     if not cube.exists():
         raise SystemExit(f"missing {cube}; run the gen stage first")
     arr = _load_arrays(cube)
@@ -758,8 +845,8 @@ def stage_identify(material: str, n_grid: int = N_GRID,
     ident["refused_parameters"] = refused
     ident["truth"] = MATERIALS[material]["truth"]
     OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / f"identify_{material}.json").write_text(
-        json.dumps(ident, indent=2, default=float))
+    name = f"identify_{material}.json" if tag is None else f"identify_{material}_{tag}.json"
+    (OUT / name).write_text(json.dumps(ident, indent=2, default=float))
     log(f"[ident] theta={theta} refused={refused}")
     return ident
 
@@ -792,6 +879,78 @@ def stage_rollout(material: str, shapes: list[str], force: bool = False,
     (OUT / f"rollout_{material}.json").write_text(
         json.dumps(scores, indent=2, default=float))
     return scores
+
+
+# ---------------------------------------------------------------------------
+# Cross-engine chain: their trajectory in, our rollout out
+# ---------------------------------------------------------------------------
+
+CROSS_CAVEAT = (
+    "Cross-engine cell. The truth trajectory is NCLaw's own simulator output, "
+    "ingested through experiments/nclaw/ingest.py; the law is identified from "
+    "that trajectory by our convex weak form; the rollout is our engine seeded "
+    "from their frame-0 cloud and frame-0 velocities, so the two trajectories "
+    "are in 1:1 particle correspondence. The MSE therefore carries both the "
+    "identification error and the difference between the two integrators, and "
+    "it is not comparable to the same-engine cells of the suite."
+)
+
+
+def stage_cross(material: str, nclaw_dir: str | Path, manifest: str | Path | dict | None,
+                name: str | None = None, force: bool = False,
+                window_frames: int | None = None, log=print) -> dict:
+    """One command per material once their data exists.
+
+    ingest their folder -> identify from the ingested trajectory -> roll out our
+    engine from their frame-0 cloud -> score their trajectory against our
+    rollout in their own metric.
+    """
+    from experiments.nclaw.ingest import read_nclaw_dir
+    DUMPS.mkdir(parents=True, exist_ok=True)
+    tag = name or Path(nclaw_dir).name
+    truth = DUMPS / f"{material}_{tag}_nclaw_truth.npz"
+    if not truth.exists() or force:
+        res = read_nclaw_dir(nclaw_dir, manifest, truth, log=log)
+        provenance, probe = res.provenance, res.meta["l_convention_probe"]
+    else:
+        log(f"[cross] reuse {truth.name} (exists)")
+        meta = _load_arrays(truth)["meta"]
+        provenance = meta.extra.get("channel_provenance", {})
+        probe = meta.extra.get("l_convention_probe", {})
+
+    ident = stage_identify(material, dump=truth, tag=f"nclaw_{tag}",
+                           window_frames=window_frames, log=log)
+    pred = DUMPS / f"{material}_{tag}_nclaw_rec.npz"
+    cloud = cloud_from_dump(truth)
+    if not pred.exists() or force:
+        run_scene(material, tag, pred, theta=ident["theta_engine"], cloud=cloud, log=log)
+    score = nclaw_position_mse(truth, pred)
+    score["role"] = "cross_engine"
+    out = {
+        "schema_version": "nclaw-cross-1.0",
+        "material": material, "scene": tag,
+        "nclaw_dir": str(nclaw_dir),
+        "ingested_dump": truth.name, "rollout_dump": pred.name,
+        "git_rev_mpm_engine": _git_rev(ROOT),
+        "channel_provenance": provenance,
+        "l_convention_probe": probe,
+        "theta_engine": ident["theta_engine"],
+        "refused_parameters": ident.get("refused_parameters", []),
+        "truth_parameters_for_reference": MATERIALS[material]["truth"],
+        "n_grid": cloud["n_grid"], "grid_lim": cloud["grid_lim"],
+        "n_particles": cloud["pts"].shape[0], "t_end": cloud["t_end"],
+        "mse": {k: score[k] for k in
+                ("mse", "mse_final_frame", "rmse_mm", "n_frames", "n_particles")},
+        "nclaw_published": NCLAW_PUBLISHED[material],
+        "caveat": CROSS_CAVEAT,
+    }
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / f"cross_{material}_{tag}.json").write_text(
+        json.dumps(out, indent=2, default=float))
+    log(f"[cross] {material}/{tag} theta={ident['theta_engine']} "
+        f"MSE={score['mse']:.3e} (RMS {score['rmse_mm']:.2f} mm over "
+        f"{score['n_frames']} frames, {score['n_particles']} particles)")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -990,7 +1149,7 @@ def _figure(material: str, results: dict) -> Path:
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("stage", choices=["gen", "identify", "rollout", "report", "all"])
+    ap.add_argument("stage", choices=["gen", "identify", "rollout", "report", "all", "cross"])
     ap.add_argument("--material", default="jelly", choices=sorted(MATERIALS))
     ap.add_argument("--shapes", default="cube,bunny,spot,dragon")
     ap.add_argument("--n-grid", type=int, default=N_GRID)
@@ -1000,7 +1159,21 @@ def main(argv: list[str] | None = None) -> None:
                     help="throw preset: NCLaw vel/preset or their geometry-eval vel/mild")
     ap.add_argument("--force", action="store_true",
                     help="re-run scenes whose dumps already exist")
+    ap.add_argument("--nclaw-dir", default=None,
+                    help="cross stage: their state_root of 0000.pt, 0001.pt, ...")
+    ap.add_argument("--manifest", default=None,
+                    help="cross stage: the ingest manifest json (see ingest.MANIFEST_SCHEMA)")
+    ap.add_argument("--name", default=None,
+                    help="cross stage: scene name for the artefacts; default the folder name")
     a = ap.parse_args(argv)
+
+    if a.stage == "cross":
+        if not a.nclaw_dir:
+            raise SystemExit("the cross stage needs --nclaw-dir (and normally --manifest)")
+        stage_cross(a.material, a.nclaw_dir, a.manifest, name=a.name, force=a.force,
+                    window_frames=a.window_frames or None)
+        return
+
     shapes = [s.strip() for s in a.shapes.split(",") if s.strip()]
     bad = [s for s in shapes if s not in SHAPES]
     if bad:
