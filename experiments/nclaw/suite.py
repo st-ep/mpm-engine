@@ -373,9 +373,13 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
     return out_path
 
 
-def dump_path(material: str, shape: str, kind: str, vel: str = "preset") -> Path:
+def dump_path(material: str, shape: str, kind: str, vel: str = "preset",
+              n_grid: int = N_GRID) -> Path:
+    """Grid 32 keeps the historical names; other grids are tagged so a grid-20
+    truth (the diff-sim baseline scenes) never collides with the grid-32 suite."""
     tag = "" if vel == "preset" else f"_{vel}"
-    return DUMPS / f"{material}_{shape}{tag}_{kind}.npz"
+    gtag = "" if n_grid == N_GRID else f"_g{n_grid}"
+    return DUMPS / f"{material}_{shape}{tag}{gtag}_{kind}.npz"
 
 
 def stage_gen(material: str, shapes: list[str], force: bool = False,
@@ -383,7 +387,7 @@ def stage_gen(material: str, shapes: list[str], force: bool = False,
     DUMPS.mkdir(parents=True, exist_ok=True)
     made = {}
     for shape in shapes:
-        p = dump_path(material, shape, "truth", vel)
+        p = dump_path(material, shape, "truth", vel, n_grid)
         if p.exists() and not force:
             log(f"[gen] skip {p.name} (exists)")
         else:
@@ -862,11 +866,11 @@ def stage_rollout(material: str, shapes: list[str], force: bool = False,
     rpath_prev = OUT / f"rollout_{material}.json"
     scores: dict = json.loads(rpath_prev.read_text()) if rpath_prev.exists() else {}
     for shape in shapes:
-        truth = dump_path(material, shape, "truth", vel)
+        truth = dump_path(material, shape, "truth", vel, n_grid)
         if not truth.exists():
             log(f"[rollout] skip {shape}: no truth dump")
             continue
-        pred = dump_path(material, shape, "rec", vel)
+        pred = dump_path(material, shape, "rec", vel, n_grid)
         if not pred.exists() or force:
             run_scene(material, shape, pred, theta=theta, n_grid=n_grid, vel=vel, log=log)
         s = nclaw_position_mse(truth, pred)
