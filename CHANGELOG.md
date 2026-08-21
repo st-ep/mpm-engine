@@ -31,7 +31,10 @@
   correspondence with the trajectory it is scored against. A new `cross` stage
   runs the whole chain in one command per material: ingest, identify from their
   trajectory, roll out from their frame-0 cloud, score in their metric.
-  `stage_identify` takes an explicit dump and an output tag.
+  `stage_identify` takes an explicit dump and an output tag, and the `identify`
+  stage exposes both as `--dump` and `--tag`, so the least-squares row of the
+  differentiable-simulation comparison is identified from exactly the grid-20
+  trajectory that comparison uses.
 - `tests/test_nclaw_ingest.py`: 16 tests plus two opt-in slow ones. A
   manufactured trajectory is exported to their format and ingested back;
   positions, velocities, L, F, volume and mass come back bitwise identical, the

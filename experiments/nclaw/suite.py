@@ -1169,6 +1169,13 @@ def main(argv: list[str] | None = None) -> None:
                     help="cross stage: the ingest manifest json (see ingest.MANIFEST_SCHEMA)")
     ap.add_argument("--name", default=None,
                     help="cross stage: scene name for the artefacts; default the folder name")
+    ap.add_argument("--dump", default=None,
+                    help="identify stage: identify from THIS schema-valid trajectory "
+                         "instead of the default cube dump (a grid-tagged truth, an "
+                         "ingested folder)")
+    ap.add_argument("--tag", default=None,
+                    help="identify stage: suffix for the results file, so a run on "
+                         "another dump does not overwrite identify_<material>.json")
     a = ap.parse_args(argv)
 
     if a.stage == "cross":
@@ -1187,7 +1194,8 @@ def main(argv: list[str] | None = None) -> None:
         stage_gen(a.material, shapes, force=a.force, n_grid=a.n_grid, vel=a.vel)
     if a.stage in ("identify", "all"):
         stage_identify(a.material, n_grid=a.n_grid,
-                       window_frames=a.window_frames or None)
+                       window_frames=a.window_frames or None,
+                       dump=a.dump, tag=a.tag)
     if a.stage in ("rollout", "all"):
         stage_rollout(a.material, shapes, force=a.force, n_grid=a.n_grid, vel=a.vel)
     if a.stage in ("report", "all"):
