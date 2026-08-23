@@ -1,6 +1,6 @@
 """Tests for the engine's grid semantics options (set_grid_semantics).
 
-Three things are checked. First, that the options are genuinely opt-in: a
+Three things are checked. First, that the options are opt-in: a
 standard scene stepped with all of them off reproduces the pre-change engine's
 trajectory bit for bit, so the added kernel branches cannot have moved the
 default arithmetic. Second, that the freeslip wall clamp is approach-only, which

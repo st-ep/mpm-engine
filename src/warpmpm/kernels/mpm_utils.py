@@ -15,6 +15,41 @@ def kirchoff_stress_FCR(
     return 2.0 * mu * (F - R) * wp.transpose(F) + id * lam * J * (J - 1.0)
 
 @wp.func
+def kirchoff_stress_stvk(F: wp.mat33, J: float, mu: float, lam: float):
+    """St Venant-Kirchhoff with the same volumetric term the corotated form uses:
+    tau = 2 mu F E + lam J (J - 1) I with E = (F^T F - I) / 2.
+
+    This is NCLaw's StVKElasticity verbatim (nclaw/material/preset.py). It is not
+    the fork's retired kirchoff_stress_StVK, which was removed as wrong; nothing
+    of that one is reused here.
+    """
+    id = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    E_green = 0.5 * (wp.transpose(F) * F - id)
+    return 2.0 * mu * F * E_green + id * lam * J * (J - 1.0)
+
+
+@wp.func
+def kirchoff_stress_volume_linear(J: float, lam: float):
+    """Purely volumetric elasticity, tau = lam J (J - 1) I, so Cauchy pressure is
+    -lam (J - 1): linear in the volume change with no deviatoric term at all.
+    NCLaw's VolumeElasticity in mode 'taichi', which is what their water uses."""
+    id = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    return id * (lam * J * (J - 1.0))
+
+
+@wp.func
+def kirchoff_stress_volume_ziran(J: float, mu: float, lam: float, gamma: float):
+    """Volumetric equation of state tau = kappa (J - J^(1-gamma)) I with
+    kappa = 2 mu / 3 + lam, NCLaw's VolumeElasticity in mode 'ziran'. Their code
+    pins gamma = 2 because gamma = 7 broke their gradients; gamma is a parameter
+    here because this engine has no such constraint."""
+    id = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    kappa = 2.0 / 3.0 * mu + lam
+    Jc = wp.max(J, 1.0e-6)
+    return id * (kappa * (J - 1.0 / wp.pow(Jc, gamma - 1.0)))
+
+
+@wp.func
 def kirchoff_stress_water(
     J: float, bulk: float
 ):
@@ -578,6 +613,84 @@ def sand_return_mapping(
 
         F_elastic = U * wp.diag(s_new) * wp.transpose(V)
     return F_elastic
+
+
+@wp.func
+def compose_dp_return_mapping(
+    F_trial: wp.mat33, model: MPMModelStruct, p: int, mat: int
+):
+    """Drucker-Prager return with cohesion, transcribed from NCLaw's
+    DruckerPragerPlasticity (nclaw/material/preset.py).
+
+    Two guards differ from theirs and only where theirs is undefined: the
+    principal stretches are clamped at their 0.05 threshold, and the deviatoric
+    norm is floored at 1e-12, where their 0/0 would be NaN. At cohesion 0 this
+    agrees with sand_return_mapping (material 2) up to that clamp.
+    """
+    U = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    V = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    sig = wp.vec3(0.0)
+    wp.svd3(F_trial, U, sig, V)
+
+    sig_c = wp.vec3(wp.max(sig[0], 0.05), wp.max(sig[1], 0.05),
+                    wp.max(sig[2], 0.05))
+    eps = wp.vec3(wp.log(sig_c[0]), wp.log(sig_c[1]), wp.log(sig_c[2]))
+    tr = eps[0] + eps[1] + eps[2]
+    eps_hat = eps - wp.vec3(tr / 3.0, tr / 3.0, tr / 3.0)
+    eps_hat_norm = wp.max(wp.length(eps_hat), 1.0e-12)
+
+    coh = model.compose_cohesion[mat]
+    shifted_tr = tr - coh * 3.0
+    delta_gamma = eps_hat_norm + (3.0 * model.lam[p] + 2.0 * model.mu[p]) / (
+        2.0 * model.mu[p]
+    ) * shifted_tr * model.alpha[mat]
+
+    eps_out = wp.vec3(coh, coh, coh)     # tensile side: stretch forgotten
+    if shifted_tr < 0.0:
+        eps_out = eps - eps_hat * (wp.max(delta_gamma, 0.0) / eps_hat_norm)
+    s_new = wp.vec3(wp.exp(eps_out[0]), wp.exp(eps_out[1]), wp.exp(eps_out[2]))
+    return U * wp.diag(s_new) * wp.transpose(V)
+
+
+@wp.func
+def compose_return_mapping(
+    F_trial: wp.mat33, model: MPMModelStruct, p: int, mat: int
+):
+    """Plasticity of the composed material (14), one PLASTICITY_KIND per type."""
+    kind = model.compose_plastic[mat]
+    F_out = F_trial                                   # 0: identity
+    if kind == 1:
+        F_out = von_mises_return_mapping(F_trial, model, p, mat)
+    if kind == 2:
+        F_out = compose_dp_return_mapping(F_trial, model, p, mat)
+    if kind == 3:
+        # shape forgotten, volume kept: their SigmaPlasticity, which is what our
+        # fluid materials do too. J is floored where their cube root would be NaN.
+        Jcbr = wp.pow(wp.max(wp.determinant(F_trial), 1.0e-9), 1.0 / 3.0)
+        F_out = wp.mat33(Jcbr, 0.0, 0.0, 0.0, Jcbr, 0.0, 0.0, 0.0, Jcbr)
+    return F_out
+
+
+@wp.func
+def compose_stress(
+    F: wp.mat33, U: wp.mat33, V: wp.mat33, sig: wp.vec3, J: float,
+    model: MPMModelStruct, p: int, mat: int
+):
+    """Elasticity of the composed material (14), one ELASTICITY_KIND per type."""
+    kind = model.compose_elastic[mat]
+    stress = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    if kind == 0:
+        stress = kirchoff_stress_FCR(F, U, V, J, model.mu[p], model.lam[p])
+    if kind == 1:
+        stress = kirchoff_stress_hencky(U, sig, model.mu[p], model.lam[p])
+    if kind == 2:
+        stress = kirchoff_stress_stvk(F, J, model.mu[p], model.lam[p])
+    if kind == 3:
+        stress = kirchoff_stress_volume_linear(J, model.lam[p])
+    if kind == 4:
+        stress = kirchoff_stress_volume_ziran(
+            J, model.mu[p], model.lam[p], model.compose_gamma[mat])
+    return stress
 
 
 @wp.kernel
@@ -1178,6 +1291,10 @@ def stress_update_particle(state: MPMStateStruct, model: MPMModelStruct, dt: flo
             J = wp.determinant(state.particle_F_trial[p])
             Jcbr = J**(1.0 / 3.0)
             state.particle_F[p] = wp.mat33(Jcbr, 0.0, 0.0, 0.0, Jcbr, 0.0, 0.0, 0.0, Jcbr)
+        elif mat == 14:  # composed: elasticity kind x plasticity kind
+            state.particle_F[p] = compose_return_mapping(
+                state.particle_F_trial[p], model, p, mat
+            )
         elif mat == 7 or mat == 8:  # stationary / rigid, no deformation
             state.particle_F[p] = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
         else:  # jelly (0)
@@ -1229,6 +1346,8 @@ def stress_update_particle(state: MPMStateStruct, model: MPMModelStruct, dt: flo
             stress = kirchoff_stress_hencky(
                 U, sig, model.mu[p], model.lam[p]
             )
+        if mat == 14:  # composed: one elasticity kind per material type
+            stress = compose_stress(state.particle_F[p], U, V, sig, J, model, p, mat)
         if mat == 11:  # compressible mu(I)-Phi(I): deviatoric Hencky + compaction pressure
             Jp_ref = state.particle_Jp[p]
             if Jp_ref < 0.5:

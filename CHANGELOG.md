@@ -4,6 +4,45 @@
 
 ### Added
 
+- Material 14, `composed`: one elasticity kind and one plasticity kind chosen
+  independently per material type, through `set_parameters_dict("elasticity",
+  ...)` and `("plasticity", ...)`. Elasticity kinds: `corotated`, `hencky`,
+  `stvk`, `volume_taichi`, `volume_ziran`. Plasticity kinds: `identity`,
+  `von_mises`, `drucker_prager` (with `cohesion`), `sigma`. Two of the
+  elasticities are new to the engine, both transcribed from NCLaw's
+  `nclaw/material/preset.py`: `stvk` is `2 mu F E_green + lam J (J - 1) I` (their
+  StVKElasticity, and NOT the fork's retired `kirchoff_stress_StVK`, none of
+  which is reused), and the two volumetric equations of state, `lam J (J - 1) I`
+  and `kappa (J - J^(1 - gamma)) I` with `gamma` a parameter at their value 2.
+  Existing materials are untouched: 14 is additive, and every kind it composes
+  is either a new function or one an existing material already calls.
+  This is what lets a cross-engine comparison run on the other engine's own
+  constitutive pair. Measured: their water is a purely volumetric law with no
+  deviatoric term, and rolling their water trajectories on it instead of our
+  gamma = 1.1 power-law fluid moves the truth-parameter floor from 5.07e-3 to
+  2.99e-12 position MSE. Their plasticine reproduces bit for bit through
+  material 14 what material 1 gives (7.8411e-12 on the dataset scene, the same
+  number to every digit), which is the check that composing is faithful.
+- `tests/test_composed_material.py`: every kind against a reference formula
+  transcribed from their preset.py with the class named, on a shared batch of
+  random deformation gradients. The returned F is compared tightly (1e-5) and
+  the stress loosely (1e-3), because the engine's Hencky stress from its own
+  returned F differs from an exact float64 evaluation of the same formula by
+  2.5e-4 relative: that is warp's fixed-iteration float32 `svd3`, measured and
+  recorded rather than absorbed into a formula tolerance. A final test compares
+  the transcriptions against their actual modules when NCLaw is importable, so
+  the transcriptions are checked and not merely trusted.
+- `experiments/nclaw/suite.py`: `run_scene(nclaw_law=...)` and per-material
+  `nclaw_law` specs naming the elasticity and plasticity kinds NCLaw's own
+  config uses for that material; `run_scene(substeps=...)` to fix the substep
+  count per dumped frame instead of taking it from the CFL, which a cross-engine
+  floor needs because the other engine's trajectory is its discrete solution at
+  its own dt (their sand needs it: our CFL picks two substeps where they take
+  one, and that alone held the sand floor at 2.0e-4 instead of 2.0e-11);
+  `identify_eos(form="linear")`, the volumetric column `(J - 1) I` with lam as
+  the single linear unknown, which recovers 5.8001e4 against their 5.7692e4 from
+  their own water dataset scene.
+
 - `MPM_Simulator_WARP.set_grid_semantics(...)`: five independent, opt-in grid and
   transfer options, all off by default.
   - `freeslip_bound`: freeslip walls applied inside the grid operator on the

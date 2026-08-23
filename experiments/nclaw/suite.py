@@ -143,6 +143,8 @@ MATERIALS: dict[str, dict] = {
         "engine": "jelly", "law": "corotated", "rho": 1000.0,
         "truth": {"E": 1.0e5, "nu": 0.2},
         "theta_names": ["mu", "lam"],
+        # their material/jelly.yaml: corotated_jelly + identity
+        "nclaw_law": {"elasticity": "corotated", "plasticity": "identity"},
     },
     "plasticine": {
         # their dataset config is SigmaElasticity + VonMisesPlasticity, i.e.
@@ -153,17 +155,29 @@ MATERIALS: dict[str, dict] = {
         "engine": "metal", "law": "vonmises", "rho": 1000.0,
         "truth": {"E": 3.0e5, "nu": 0.25, "yield_stress": 5.0e3},
         "theta_names": ["mu", "lam", "yield_stress"],
+        # their material/plasticine.yaml: sigma_plasticine + von_mises_plasticine
+        "nclaw_law": {"elasticity": "hencky", "plasticity": "von_mises"},
     },
     "sand": {
         "engine": "sand", "law": "drucker_prager", "rho": 1000.0,
         "truth": {"E": 1.0e6, "nu": 0.2, "friction_angle": 25.0},
         "theta_names": ["friction_angle"],
+        # their material/sand.yaml: sigma_sand + drucker_prager_sand (cohesion 0)
+        "nclaw_law": {"elasticity": "hencky", "plasticity": "drucker_prager",
+                      "cohesion": 0.0},
     },
     "water": {
         "engine": "fluid", "law": "eos_fluid", "rho": 1000.0,
         # their volumetric elasticity E, nu; the engine takes a bulk modulus
         "truth": {"E": 1.0e5, "nu": 0.3},
         "theta_names": ["bulk_modulus"],
+        # their material/water.yaml: volume_water (mode taichi) + sigma. Their
+        # water has NO deviatoric term and its pressure is linear in J - 1,
+        # where our fluid material is a gamma = 1.1 power law; on their own
+        # water_dataset stress channel, p = -lam (J - 1) fits with lam = 57692
+        # Pa (their E nu / ((1+nu)(1-2nu)) exactly) at zero residual, while the
+        # power-law form fits with negative stiffness and 0.81 residual.
+        "nclaw_law": {"elasticity": "volume_taichi", "plasticity": "sigma"},
     },
 }
 
@@ -257,12 +271,34 @@ def throw_velocity(pts: np.ndarray, vel: str = "preset") -> np.ndarray:
 # Forward run
 # ---------------------------------------------------------------------------
 
-def engine_params(material: str, theta: dict | None = None) -> dict:
-    """warp-mpm parameter dict for a material, at truth or at recovered theta."""
+def engine_params(material: str, theta: dict | None = None,
+                  nclaw_law: bool = False) -> dict:
+    """warp-mpm parameter dict for a material, at truth or at recovered theta.
+
+    ``nclaw_law`` selects the engine's composed material (14) at the elasticity
+    and plasticity kinds NCLaw's own config for this material uses, from the
+    entry's ``nclaw_law`` spec. That is a comparison path, not a change of what
+    the engine does by default: the four physical materials keep their own
+    engine materials otherwise.
+    """
     spec = MATERIALS[material]
     p = dict(spec["truth"])
     if theta:
         p.update(theta)
+    if nclaw_law and "nclaw_law" in spec:
+        law = spec["nclaw_law"]
+        kw = {"material": "composed", "density": spec["rho"],
+              "g": list(GRAVITY), "E": p["E"], "nu": p["nu"],
+              "elasticity": law["elasticity"], "plasticity": law["plasticity"]}
+        if "yield_stress" in p:
+            kw["yield_stress"] = p["yield_stress"]
+        if "friction_angle" in p:
+            kw["friction_angle"] = p["friction_angle"]
+        if "cohesion" in law:
+            kw["cohesion"] = law["cohesion"]
+        if "eos_gamma" in law:
+            kw["eos_gamma"] = law["eos_gamma"]
+        return kw
     kw = {"material": spec["engine"], "density": spec["rho"],
           "g": list(GRAVITY)}
     if spec["engine"] == "fluid":
@@ -292,7 +328,7 @@ def _wave_speed(material: str, kw: dict) -> float:
     unphysical law has to stop here and say so.
     """
     rho = MATERIALS[material]["rho"]
-    if MATERIALS[material]["engine"] == "fluid":
+    if "bulk_modulus" in kw:
         bulk = float(kw["bulk_modulus"])
         if not np.isfinite(bulk) or bulk <= 0.0:
             raise ValueError(f"non-physical bulk modulus for a rollout: {bulk!r}")
@@ -338,7 +374,8 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
               n_grid: int = N_GRID, grid_lim: float = GRID_LIM,
               t_end: float = T_END, n_frames: int = N_FRAMES,
               cfl: float = 0.35, vel: str = "preset", cloud: dict | None = None,
-              nclaw_bc: bool | dict = False, log=print) -> Path:
+              nclaw_bc: bool | dict = False, nclaw_law: bool = False,
+              substeps: int | None = None, log=print) -> Path:
     """One truth or rollout trajectory, dumped schema-valid with F and V0.
 
     ``cloud`` (from ``cloud_from_dump``) replaces the analytic seeding with a
@@ -352,6 +389,15 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
     how one behavior at a time is measured. The walls come from exactly one
     source: the engine's freeslip grid operator when ``freeslip_bound`` is set,
     otherwise the six collider slip planes.
+
+    ``nclaw_law`` rolls the material out on NCLaw's own constitutive pair for it
+    (engine material 14, see ``engine_params``), which for water is a different
+    equation of state and not a reparameterization of ours.
+
+    ``substeps`` fixes the substep count per dumped frame instead of taking it
+    from the CFL. A cross-engine floor needs it: their trajectory is their
+    discrete solution at their own dt, so matching that dt is what makes the
+    comparison about the law rather than about the time discretization.
     """
     import warp as wp
     wp.config.quiet = True
@@ -369,13 +415,23 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
         pts, vol0, v0 = cloud["pts"], cloud["vol0"], cloud["v0"]
         n_grid, grid_lim = cloud["n_grid"], cloud["grid_lim"]
         t_end, n_frames = cloud["t_end"], cloud["n_frames"]
-    kw = engine_params(material, theta)
+    kw = engine_params(material, theta, nclaw_law=nclaw_law)
     dx = grid_lim / n_grid
     frame_dt = t_end / n_frames
     c = _wave_speed(material, kw)
     v_max = float(np.abs(v0).max())
     dt_cfl = cfl * dx / max(c + v_max, 1e-9)
-    substeps = max(int(np.ceil(frame_dt / dt_cfl)), 1)
+    cfl_substeps = max(int(np.ceil(frame_dt / dt_cfl)), 1)
+    if substeps is None:
+        substeps = cfl_substeps
+    elif substeps < cfl_substeps:
+        # an explicit substep count is how a cross-engine comparison matches the
+        # other engine's time step exactly, which is not the same thing as being
+        # more accurate: their reference trajectory IS their discrete solution at
+        # their dt, so subdividing it moves us away from it. Say so when the
+        # request is coarser than our own CFL would pick.
+        log(f"[gen] substeps={substeps} requested below the CFL's {cfl_substeps} "
+            f"(dt {frame_dt / substeps:.2e} vs {dt_cfl:.2e})")
     dt = frame_dt / substeps
     log(f"[gen] {material}/{shape} N={len(pts)} grid={n_grid}^3 c={c:.0f}m/s "
         f"dt={dt:.2e} sub={substeps} frames={n_frames} theta={theta or 'truth'}")
@@ -412,7 +468,8 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
         s, grain_diameter=1.0e-3, rho_s=MATERIALS[material]["rho"],
         rho_bulk=MATERIALS[material]["rho"], packing_fraction=1.0,
         gravity_inplane=(float(GRAVITY[0]), float(GRAVITY[2])),
-        law=MATERIALS[material]["law"], law_params=engine_params(material, theta),
+        law=MATERIALS[material]["law"],
+        law_params=engine_params(material, theta, nclaw_law=nclaw_law),
         theta_true=None, l_convention=L_CONVENTION_STRING, store_F=True,
         extra={"material": material, "shape": shape, "n_grid": n_grid,
                "grid_lim": grid_lim, "dt": dt, "substeps_per_frame": substeps,
@@ -423,7 +480,8 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
                "bound_cells": BOUND_CELLS,
                "seeded_from": None if cloud is None else cloud["source"],
                "collider_bc": "freeslip_grid_op" if kw_bc else "slip",
-               "grid_semantics": kw_bc,
+               "grid_semantics": kw_bc, "cfl_substeps": cfl_substeps,
+               "nclaw_law": MATERIALS[material].get("nclaw_law") if nclaw_law else None,
                "recovered": theta is not None})
     t0 = time.time()
     step = 0
@@ -781,15 +839,29 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
 
 def identify_eos(arr: dict, gamma: float = 1.1, window_frames: int = 26,
                  frame_stride: int = 2, margin_cells: float = 3.0,
-                 cond_max: float = 1.0e12, log=print) -> dict:
-    """Bulk modulus of the weakly compressible EOS from the volumetric weak form.
+                 cond_max: float = 1.0e12, form: str = "power_law",
+                 log=print) -> dict:
+    """Stiffness of a volumetric equation of state from the volumetric weak form.
 
-    ``kirchoff_stress_water`` sets Cauchy = -bulk (J^-gamma - 1) I, so the
-    single stress column is -(J^-gamma - 1) I and the unknown is the bulk
-    modulus. Water is a hard case for identification: the compression the throw
-    produces is tiny, so the column can be starved. The conditioning and the
-    realized volumetric strain are reported and a starved solve refuses.
+    Two forms, one linear unknown each, so the solve stays the same convex
+    least-squares problem:
+
+    power_law
+        our fluid material, ``kirchoff_stress_water``: Cauchy =
+        -bulk (J^-gamma - 1) I, column -(J^-gamma - 1) I, unknown the bulk
+        modulus.
+    linear
+        NCLaw's VolumeElasticity in mode taichi: Cauchy = lam (J - 1) I, column
+        (J - 1) I, unknown lam. Their water was generated with this one, and the
+        two forms are not reparameterizations of each other at their splash's
+        compression (J down to 0.039).
+
+    Water is a hard case for identification either way: the compression the
+    throw produces is small, so the column can be starved. The conditioning and
+    the realized volumetric strain are reported and a starved solve refuses.
     """
+    if form not in ("power_law", "linear"):
+        raise ValueError(f"unknown EOS form {form!r}")
     from ident.weakform.elastic_grid import assemble_columns_timeweak, solve_elastic_grid
 
     eye = np.eye(3)[None]
@@ -802,7 +874,8 @@ def identify_eos(arr: dict, gamma: float = 1.1, window_frames: int = 26,
         if ok.sum() < 50:
             return None
         Jall.append(J[ok])
-        col = -(np.power(np.clip(J, 1e-6, None), -gamma) - 1.0)
+        col = (J - 1.0 if form == "linear"
+               else -(np.power(np.clip(J, 1e-6, None), -gamma) - 1.0))
         Vsig = (Vp * col)[:, None, None, None] * eye[:, None, :, :]
         return Vsig, None, ok, np.abs(J - 1.0)
 
@@ -818,22 +891,34 @@ def identify_eos(arr: dict, gamma: float = 1.1, window_frames: int = 26,
                 "n_rows": sysm.n_rows,
                 "n_rows_before_gating": sysm.n_rows_before_gating}
     out = solve_elastic_grid(sysm)
-    bulk = out["theta"][0]
+    stiffness = out["theta"][0]
     Jc = np.concatenate(Jall) if Jall else np.ones(1)
-    out.update({"bulk_modulus": bulk, "gamma": gamma, "refused": False,
+    key = "lam" if form == "linear" else "bulk_modulus"
+    out.update({key: stiffness, "form": form, "gamma": gamma, "refused": False,
                 "row_survival": sysm.row_survival,
                 "n_rows_before_gating": sysm.n_rows_before_gating,
                 "volumetric_strain_p99": float(np.percentile(np.abs(Jc - 1.0), 99))})
-    if not np.isfinite(bulk) or bulk <= 0.0 or out["cond_AtA"] > cond_max:
+    if not np.isfinite(stiffness) or stiffness <= 0.0 or out["cond_AtA"] > cond_max:
         out.update({"refused": True,
-                    "reason": (f"volumetric column starved: bulk={bulk:.3e}, "
+                    "reason": (f"volumetric column starved: {key}={stiffness:.3e}, "
                                f"cond={out['cond_AtA']:.3e}")})
-    log(f"[ident] eos bulk={bulk:.4e} rows={sysm.n_rows} "
+    log(f"[ident] eos {form} {key}={stiffness:.4e} rows={sysm.n_rows} "
         f"cond={out['cond_AtA']:.2e} refused={out['refused']}")
     return out
 
 
-def theta_for_engine(material: str, ident: dict) -> tuple[dict, list[str]]:
+def lam_to_E(lam: float, nu: float) -> float:
+    """E from lam at fixed nu, the inverse of lam = E nu / ((1+nu)(1-2nu)).
+
+    NCLaw's volumetric water elasticity reads lam and nothing else, so nu is
+    bookkeeping there: the rollout depends on the recovered lam alone, and nu is
+    carried at their config value so the engine's (E, nu) arguments reproduce it.
+    """
+    return float(lam * (1.0 + nu) * (1.0 - 2.0 * nu) / nu)
+
+
+def theta_for_engine(material: str, ident: dict,
+                     nclaw_law: bool = False) -> tuple[dict, list[str]]:
     """Recovered parameters in the engine's own arguments, plus what was refused.
 
     A refused parameter falls back to its known-class prior value, which is the
@@ -871,12 +956,22 @@ def theta_for_engine(material: str, ident: dict) -> tuple[dict, list[str]]:
         theta.update({"E": truth["E"], "nu": truth["nu"]})
     elif material == "water":
         eos = ident.get("eos", {})
-        if eos.get("refused", True):
-            refused.append("bulk_modulus")
-            theta["bulk_modulus"] = bulk_from_E_nu(truth["E"], truth["nu"])
+        if nclaw_law:
+            # their linear volumetric EOS: one unknown, lam, carried into the
+            # engine as (E, nu) at their nu
+            nu = truth["nu"]
+            if eos.get("refused", True):
+                refused.append("lam")
+                theta.update({"E": truth["E"], "nu": nu})
+            else:
+                theta.update({"E": lam_to_E(eos["lam"], nu), "nu": nu})
         else:
-            theta["bulk_modulus"] = eos["bulk_modulus"]
-        theta.update({"E": truth["E"], "nu": truth["nu"]})
+            if eos.get("refused", True):
+                refused.append("bulk_modulus")
+                theta["bulk_modulus"] = bulk_from_E_nu(truth["E"], truth["nu"])
+            else:
+                theta["bulk_modulus"] = eos["bulk_modulus"]
+            theta.update({"E": truth["E"], "nu": truth["nu"]})
     return theta, refused
 
 
@@ -890,7 +985,8 @@ WINDOW_FRAMES: dict[str, int] = {"jelly": 26, "plasticine": 26,
 
 def stage_identify(material: str, n_grid: int = N_GRID,
                    window_frames: int | None = None, dump: str | Path | None = None,
-                   tag: str | None = None, log=print) -> dict:
+                   tag: str | None = None, nclaw_law: bool = False,
+                   log=print) -> dict:
     """Recover the law from ONE trajectory: the cube throw by default.
 
     ``dump`` points the same legs at another schema-valid trajectory, which is
@@ -911,11 +1007,15 @@ def stage_identify(material: str, n_grid: int = N_GRID,
     elif material == "sand":
         ident["friction"] = identify_friction(arr, window_frames=window_frames, log=log)
     elif material == "water":
-        ident["eos"] = identify_eos(arr, window_frames=window_frames, log=log)
-    theta, refused = theta_for_engine(material, ident)
+        # their water is the linear volumetric EOS; ours is the power law
+        ident["eos"] = identify_eos(
+            arr, window_frames=window_frames,
+            form="linear" if nclaw_law else "power_law", log=log)
+    theta, refused = theta_for_engine(material, ident, nclaw_law=nclaw_law)
     ident["theta_engine"] = theta
     ident["refused_parameters"] = refused
     ident["truth"] = MATERIALS[material]["truth"]
+    ident["nclaw_law"] = MATERIALS[material].get("nclaw_law") if nclaw_law else None
     OUT.mkdir(parents=True, exist_ok=True)
     name = f"identify_{material}.json" if tag is None else f"identify_{material}_{tag}.json"
     (OUT / name).write_text(json.dumps(ident, indent=2, default=float))

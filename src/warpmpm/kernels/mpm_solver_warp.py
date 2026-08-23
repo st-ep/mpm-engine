@@ -16,8 +16,43 @@ MATERIAL_NAME_TO_ID = {
     "plasticine": 5, "fluid": 6, "stationary": 7, "rigid": 8,
     "mu_i_sand": 9, "newtonian": 10, "mu_i_phi": 11, "tabulated_viscous": 12,
     "tabulated_mu_i": 13,
+    # composed material: one elasticity kind and one plasticity kind, chosen
+    # independently per material type (see ELASTICITY_KIND / PLASTICITY_KIND).
+    # Exists so NCLaw's constitutive zoo (nclaw/material/preset.py, composed the
+    # same way by their ComposeMaterial) can be reproduced term by term for a
+    # cross-engine comparison without touching any existing material path.
+    "composed": 14,
+}
+# Kind tables for material 14. Every elasticity here is linear in (mu, lam) or in
+# a single stiffness, so a least-squares identification column exists for all of
+# them.
+ELASTICITY_KIND = {
+    "corotated": 0,      # 2 mu (F - R) F^T + lam J (J - 1) I   (= our FCR)
+    "hencky": 1,         # U diag(2 mu eps + lam tr eps) U^T    (their SigmaElasticity)
+    "stvk": 2,           # 2 mu F E_green + lam J (J - 1) I     (their StVKElasticity)
+    "volume_taichi": 3,  # lam J (J - 1) I                      (their VolumeElasticity taichi)
+    "volume_ziran": 4,   # kappa (J - J^(1-gamma)) I            (their VolumeElasticity ziran)
+}
+PLASTICITY_KIND = {
+    "identity": 0,        # F_trial unchanged
+    "von_mises": 1,       # log-space deviatoric return at yield_stress
+    "drucker_prager": 2,  # log-space cone return at alpha(friction_angle), cohesion
+    "sigma": 3,           # F = diag(J^(1/3)): shape forgotten, volume kept (fluids)
 }
 MAX_MATERIALS = 16
+
+
+def _kind_id(value, table, what):
+    """Kind name (or raw id) to its integer, with the valid names in the error."""
+    if isinstance(value, int):
+        if value not in table.values():
+            raise ValueError(f"unknown {what} kind id {value}; "
+                             f"valid: {sorted(table.items(), key=lambda kv: kv[1])}")
+        return value
+    if value not in table:
+        raise ValueError(f"unknown {what} kind {value!r}; "
+                         f"valid: {sorted(table)}")
+    return table[value]
 # MAX_CDF and the tag bit layout live in warp_utils (the transfer kernels in
 # mpm_utils need them too) and arrive via the star import below.
 
@@ -264,6 +299,16 @@ class MPM_Simulator_WARP:
                   inputs=[self.mpm_model.muI_rho_s, 1.0], device=device)
         wp.launch(kernel=set_value_to_float_array, dim=MAX_MATERIALS,
                   inputs=[self.mpm_model.muI_phi_init, 1.0], device=device)
+
+        # composed material (14), per material type. Defaults are the identity
+        # composition (corotated elasticity, no plasticity) so the arrays are
+        # valid for every type; set via set_parameters_dict("elasticity", ...).
+        self.mpm_model.compose_elastic = wp.zeros(shape=MAX_MATERIALS, dtype=int, device=device)
+        self.mpm_model.compose_plastic = wp.zeros(shape=MAX_MATERIALS, dtype=int, device=device)
+        self.mpm_model.compose_gamma = wp.zeros(shape=MAX_MATERIALS, dtype=float, device=device)
+        self.mpm_model.compose_cohesion = wp.zeros(shape=MAX_MATERIALS, dtype=float, device=device)
+        wp.launch(kernel=set_value_to_float_array, dim=MAX_MATERIALS,
+                  inputs=[self.mpm_model.compose_gamma, 2.0], device=device)
 
         # tabulated apparent viscosity (material 12): one global eta_app(gd) table on a
         # uniform log10(gd) grid. Always allocated (>=2 entries) so the struct field is
@@ -724,6 +769,18 @@ class MPM_Simulator_WARP:
         if "softening" in kwargs:
             s_torch = wp.to_torch(self.mpm_model.softening)
             s_torch[mat_id] = kwargs["softening"]
+
+        # composed material (14): the two kinds, plus what has no other home
+        if "elasticity" in kwargs:
+            wp.to_torch(self.mpm_model.compose_elastic)[mat_id] = \
+                _kind_id(kwargs["elasticity"], ELASTICITY_KIND, "elasticity")
+        if "plasticity" in kwargs:
+            wp.to_torch(self.mpm_model.compose_plastic)[mat_id] = \
+                _kind_id(kwargs["plasticity"], PLASTICITY_KIND, "plasticity")
+        if "eos_gamma" in kwargs:
+            wp.to_torch(self.mpm_model.compose_gamma)[mat_id] = float(kwargs["eos_gamma"])
+        if "cohesion" in kwargs:
+            wp.to_torch(self.mpm_model.compose_cohesion)[mat_id] = float(kwargs["cohesion"])
 
         # tabulated apparent viscosity (material 12): eta_app samples on a uniform
         # log10(gd) grid in [eta_table_smin, eta_table_smax]
@@ -1831,6 +1888,18 @@ class MPM_Simulator_WARP:
         if "softening" in params_dict:
             s_torch = wp.to_torch(self.mpm_model.softening)
             s_torch[mat_id] = params_dict["softening"]
+
+        # composed material (14)
+        if "elasticity" in params_dict:
+            wp.to_torch(self.mpm_model.compose_elastic)[mat_id] = \
+                _kind_id(params_dict["elasticity"], ELASTICITY_KIND, "elasticity")
+        if "plasticity" in params_dict:
+            wp.to_torch(self.mpm_model.compose_plastic)[mat_id] = \
+                _kind_id(params_dict["plasticity"], PLASTICITY_KIND, "plasticity")
+        if "eos_gamma" in params_dict:
+            wp.to_torch(self.mpm_model.compose_gamma)[mat_id] = float(params_dict["eos_gamma"])
+        if "cohesion" in params_dict:
+            wp.to_torch(self.mpm_model.compose_cohesion)[mat_id] = float(params_dict["cohesion"])
 
         # local mu(I) rheology parameters (material 9 and 11), per material type
         for key, arr in (

@@ -412,7 +412,7 @@ def test_cross_stage_is_one_command(exported, tmp_path, monkeypatch):
     monkeypatch.setattr(suite, "OUT", tmp_path)
     monkeypatch.setattr(suite, "DUMPS", tmp_path / "dumps")
     monkeypatch.setattr(suite, "theta_for_engine",
-                        lambda material, ident: ({"E": E_TRUE, "nu": NU_TRUE}, []))
+                        lambda material, ident, **_: ({"E": E_TRUE, "nu": NU_TRUE}, []))
     out = suite.stage_cross("jelly", state_dir, man, name="rt", window_frames=8,
                             log=lambda *_: None)
     assert out["n_particles"] == out["mse"]["n_particles"]

@@ -74,6 +74,14 @@ class MPMModelStruct:
     ####### for PhysGaussian: covariance
     update_cov_with_F: int
 
+    ######## composed material (14): one elasticity kind and one plasticity kind
+    # per material type, chosen independently. Inert for every other material.
+    # Reuses mu, lam, yield_stress and alpha; carries only what has no home yet.
+    compose_elastic: wp.array(dtype=int)    # ELASTICITY_KIND value
+    compose_plastic: wp.array(dtype=int)    # PLASTICITY_KIND value
+    compose_gamma: wp.array(dtype=float)    # ziran EOS exponent (their value: 2)
+    compose_cohesion: wp.array(dtype=float) # Drucker-Prager cohesion (their sand: 0)
+
     ####### grid semantics and transfer form (0/-1 = the historical default) ####
     # Set through MPM_Simulator_WARP.set_grid_semantics. Each option is
     # independent, and all of them are off unless asked for.
