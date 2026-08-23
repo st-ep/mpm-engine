@@ -4,6 +4,35 @@
 
 ### Added
 
+- `experiments/nclaw/replay.py`: elastic-state replay for identification of
+  plastic laws from positions alone. A plastic material's stored F is the
+  elastic part; positions only give the total deformation, and on the
+  plasticine throw the two diverge 80x once the material flows, which is how
+  the first positions-only run returned E ten times low without refusing.
+  The module fits per-frame deformation increments over current-frame
+  neighbourhoods, replays them through numpy mirrors of NCLaw's own return
+  maps (the formulas `tests/test_composed_material.py` verifies), and fits
+  the plastic parameter by the time-weak momentum assembly with every
+  sub-yield particle's full stress as data. On the true hidden state that
+  fit recovers the yield stress to 1.5 percent; on the replayed state the
+  residual gate refuses it (directions align to 0.98 but the errors are
+  spatially correlated, and the volumetric part drifts to |dJ| 0.23 at p95),
+  so the tier now refuses where it used to ship garbage.
+- `experiments/nclaw/rollout_scan.py`: derivative-free system identification
+  of one parameter by rolling the engine from the tier's frame-0 seed and
+  scoring position MSE against the identify trajectory, coarse grid plus
+  refinement rounds, every candidate cached. With the elastic pair assumed
+  and stated, the scans return phi 24.5 against 25.0 for sand and tau_y 5000
+  against 5000 for plasticine at the positions-only tier; the objective is
+  steep (5 degrees or 2x costs 25x to 45x in MSE). NCLaw's sys-id baseline
+  optimizes the same objective through a differentiable MPM; the scan never
+  differentiates the simulator.
+- `experiments/nclaw/identify_no_stress.py`: the positions-only tier now
+  dispatches plasticine and sand to the replay diagnostics plus the rollout
+  scan, records the assumed elastic pair, and reads no stress anywhere (the
+  basal-plate variant is now offered at the no-stress tier only).
+  `suite.identify_elastic` accepts an explicit frame list for pre-yield
+  window fits.
 - `experiments/nclaw/strip_channels.py`: reduced-channel copies of a dump, for
   running identification under a degradation tier instead of trusting a promise
   not to read a channel. `no_stress` keeps every stored kinematic channel

@@ -647,14 +647,29 @@ def _hencky_dev_norm(F: np.ndarray) -> np.ndarray:
 
 
 def identify_elastic(arr: dict, window_frames: int = 26, frame_stride: int = 2,
-                     margin_cells: float = 3.0, log=print) -> dict:
-    """(mu, lambda) of the fixed-corotated pair by the Step 0 time-weak assembly."""
+                     margin_cells: float = 3.0,
+                     frames: list[int] | None = None, log=print) -> dict:
+    """(mu, lambda) of the fixed-corotated pair by the Step 0 time-weak assembly.
+
+    ``frames`` restricts the fit to an explicit uniformly spaced frame list.
+    The positions-only plasticine path uses it for the pre-yield window, where
+    total and elastic deformation still coincide and the tier's MLS F is
+    therefore the right state to read.
+    """
     from ident.weakform.elastic_grid import (
         assemble_elastic_timeweak,
         moduli_to_E_nu,
         solve_elastic_grid,
     )
-    frames = list(range(0, arr["x"].shape[0], frame_stride))
+    if frames is None:
+        frames = list(range(0, arr["x"].shape[0], frame_stride))
+    else:
+        frames = [int(f) for f in frames]
+        spacing = np.diff(frames)
+        if spacing.size and not np.all(spacing == spacing[0]):
+            raise ValueError("frames must be uniformly spaced; the temporal "
+                             "weight assumes a constant frame spacing")
+        frame_stride = int(spacing[0]) if spacing.size else 1
     sysm = assemble_elastic_timeweak(
         arr["x"], arr["F"], arr["v"], arr["vol0"], arr["mass"], arr["g"],
         arr["frame_dt"] * frame_stride, arr["n_grid"], arr["grid_lim"],

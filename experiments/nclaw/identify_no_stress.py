@@ -358,6 +358,8 @@ def stage_identify_no_stress(material: str, dump: str | Path,
                              tag: str | None = None, nclaw_law: bool = False,
                              window_frames: int | None = None,
                              basal_dump: str | Path | None = None,
+                             nclaw_bc: bool = False,
+                             substeps: int | None = None,
                              log=print) -> dict:
     """Identify from one trajectory with the stress channel excluded.
 
@@ -390,8 +392,61 @@ def stage_identify_no_stress(material: str, dump: str | Path,
     variants: dict[str, dict] = {}
     walls: dict[str, float] = {}
 
+    tier = arr["meta"].extra.get("tier", "no_stress")
     t0 = time.time()
-    if material in ("jelly", "plasticine"):
+    if tier == "positions_only" and material in ("plasticine", "sand"):
+        # A plastic material's stored F is the elastic part; positions only give
+        # the total deformation, and once the material flows the two diverge.
+        # The replay estimators rebuild the elastic state from measured
+        # increments and are run here as the record of why they refuse: the
+        # fit machinery recovers the yield stress to 1.5 percent on the true
+        # hidden state, but the reconstruction carries spatially correlated
+        # direction and volume errors the residual gate catches. The parameter
+        # that ships comes from the rollout scan, with the elastic pair
+        # ASSUMED at its configured value and stated.
+        from experiments.nclaw.replay import (
+            identify_friction_replay,
+            identify_yield_replay,
+        )
+        from experiments.nclaw.rollout_scan import scan_parameter
+        E_a, nu_a = float(truth["E"]), float(truth["nu"])
+        mu_a = E_a / (2.0 * (1.0 + nu_a))
+        lam_a = E_a * nu_a / ((1.0 + nu_a) * (1.0 - 2.0 * nu_a))
+        assumed_note = ("elastic pair assumed at the configured value at this "
+                        "tier: the throw loads it only in a short impact window "
+                        "and the reconstructed state there biases the fit "
+                        "(measured on plasticine: mu +40 percent)")
+        ident["assumed_parameters"] = ["E", "nu"]
+        if material == "plasticine":
+            ident["elastic"] = {"refused": True, "reason": assumed_note}
+            t1 = time.time()
+            ident["yield_replay"] = identify_yield_replay(
+                arr, mu_a, lam_a, log=log)
+            walls["yield_replay_s"] = time.time() - t1
+            t1 = time.time()
+            ident["yield"] = scan_parameter(
+                material, dump, "yield_stress",
+                coarse=[1000, 2000, 4000, 8000, 16000, 32000],
+                theta_base={"E": E_a, "nu": nu_a}, mode="mul",
+                refine_rounds=[[0.6, 0.8, 1.25, 1.6], [0.9, 1.1]],
+                nclaw_bc=nclaw_bc, nclaw_law=nclaw_law, substeps=substeps,
+                log=log)
+            walls["yield_scan_s"] = time.time() - t1
+        else:
+            t1 = time.time()
+            ident["friction_replay"] = identify_friction_replay(
+                arr, E=E_a, nu=nu_a, log=log)
+            walls["friction_replay_s"] = time.time() - t1
+            t1 = time.time()
+            ident["friction"] = scan_parameter(
+                material, dump, "friction_angle",
+                coarse=[15, 20, 25, 30, 35, 40],
+                theta_base={"E": E_a, "nu": nu_a}, mode="add",
+                refine_rounds=[[-3, -2, -1, 1, 2, 3], [-0.5, 0.5]],
+                nclaw_bc=nclaw_bc, nclaw_law=nclaw_law, substeps=substeps,
+                log=log)
+            walls["friction_scan_s"] = time.time() - t1
+    elif material in ("jelly", "plasticine"):
         ident["elastic"] = suite.identify_elastic(
             arr, window_frames=window_frames, log=log)
         if material == "plasticine" and not ident["elastic"].get("refused", True):
@@ -453,6 +508,34 @@ def stage_identify_no_stress(material: str, dump: str | Path,
         ident["eos"] = suite.identify_eos(
             arr, window_frames=window_frames,
             form="linear" if nclaw_law else "power_law", log=log)
+        if tier == "positions_only":
+            # the weak-form fit does not refuse here, so it stays primary; the
+            # scan is a variant leg. From MLS volume readings on a splash the
+            # fit lands 37.5 percent low on lam while the correct-parameter
+            # rollout already beats published on four of five scenes, so the
+            # tier's loss is identification, not the seed, and the scan
+            # measures how much of it the eval objective recovers.
+            from experiments.nclaw.rollout_scan import scan_parameter
+            nu_w = float(truth["nu"])
+            t1 = time.time()
+            sc = scan_parameter(
+                material, dump, "E",
+                coarse=[40000, 60000, 80000, 100000, 120000, 140000],
+                theta_base={"nu": nu_w}, mode="mul",
+                refine_rounds=[[0.8, 0.9, 1.1, 1.25], [0.95, 1.05]],
+                nclaw_bc=nclaw_bc, nclaw_law=nclaw_law, substeps=substeps,
+                log=log)
+            walls["eos_scan_s"] = time.time() - t1
+            variants["rollout_scan"] = {
+                "theta": {"E": sc["E"], "nu": nu_w},
+                "refused": False,
+                "note": "",
+                "provenance": ("stiffness by the rollout scan on the identify "
+                               "trajectory; nu carried at the configured value "
+                               "(their law reads lam alone)"),
+                "diagnostics": {k: sc.get(k) for k in
+                                ("E", "mse_at_best", "n_rollouts", "scan")},
+            }
     walls["identify_total_s"] = time.time() - t0
 
     theta, refused = suite.theta_for_engine(material, ident, nclaw_law=nclaw_law)

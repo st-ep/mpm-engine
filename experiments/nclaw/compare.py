@@ -145,10 +145,12 @@ def main(material: str, trajectories: str | Path | None = None,
         identify_dump = tier_dump_of["dataset"]
         ident = stage_identify_no_stress(
             material, dump=identify_dump, tag=f"crossfloor_{material}{tag}",
-            nclaw_law=nclaw_law,
+            nclaw_law=nclaw_law, nclaw_bc=nclaw_bc, substeps=substeps,
             # read for the basal-plate variant only, and only inside one cell of
-            # the floor; every other use of this file at this tier is diagnosis
-            basal_dump=dataset if material == "sand" else None)
+            # the floor; every other use of this file at this tier is diagnosis.
+            # The positions-only tier reads no stress anywhere, so no basal dump.
+            basal_dump=(dataset if material == "sand" and tier == "no_stress"
+                        else None))
         variants = ident.get("theta_variants", {})
     wall_identify = time.time() - t_ident
     theta_rec = ident["theta_engine"]
