@@ -63,6 +63,17 @@ if str(ROOT) not in sys.path:
 SIG_FLOOR = 1.0e-6            # their preset.py clamps the singular values at 0.05
 PRESSURE_SOURCES = ("hencky_F", "basal_scaled", "depth")
 
+# A variant leg always carries the value its own estimator produced, refusal or
+# not, because that is the number whose rollout cost is worth measuring. What
+# ships on a refusal is the known-class prior instead, and in this comparison
+# the prior entry IS the truth value, so a refused leg rolled out at the prior
+# would reproduce the correct-property row by construction and would say nothing
+# about the estimator.
+_REFUSED_LEG_NOTE = (
+    "this estimator refused; the leg rolls out the refused value to measure what "
+    "accepting it would have cost. What ships on a refusal is the known-class "
+    "prior, whose row is the correct-property row of this table.")
+
 
 # ---------------------------------------------------------------------------
 # Stress-free pressure from the stored deformation gradient
@@ -393,11 +404,9 @@ def stage_identify_no_stress(material: str, dump: str | Path,
             ym = ident["yield_momentum"]
             base, _ = suite.theta_for_engine(material, ident, nclaw_law=nclaw_law)
             variants["yield_momentum"] = {
-                "theta": {**base,
-                          "yield_stress": (truth["yield_stress"] if ym.get("refused", True)
-                                           else ym["yield_stress"])},
-                "refused_parameters": (["yield_stress"] if ym.get("refused", True)
-                                       else []),
+                "theta": {**base, "yield_stress": ym.get("yield_stress")},
+                "refused": bool(ym.get("refused", True)),
+                "note": _REFUSED_LEG_NOTE if ym.get("refused", True) else "",
                 "provenance": ("elastic pair from the momentum fit, yield stress from "
                                "the momentum fit with one yield column on the "
                                "kinematically flowing set"),
@@ -426,11 +435,14 @@ def stage_identify_no_stress(material: str, dump: str | Path,
                 ident["friction"] = fr
             else:
                 ident[f"friction_{key}"] = fr
+                base, _ = suite.theta_for_engine(material, {}, nclaw_law=nclaw_law)
+                refused = bool(fr.get("refused", True))
+                angle = (fr.get("friction_angle_solve") if refused
+                         else fr.get("friction_angle"))
                 variants[key] = {
-                    "theta": suite.theta_for_engine(
-                        material, {"friction": fr}, nclaw_law=nclaw_law)[0],
-                    "refused_parameters": suite.theta_for_engine(
-                        material, {"friction": fr}, nclaw_law=nclaw_law)[1],
+                    "theta": {**base, "friction_angle": angle},
+                    "refused": refused,
+                    "note": _REFUSED_LEG_NOTE if refused else "",
                     "provenance": entry["provenance"],
                     "diagnostics": {k: fr.get(k) for k in
                                     ("friction_angle", "friction_angle_solve",
