@@ -846,7 +846,23 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
                 "n_rows_before_gating": sysm.n_rows_before_gating}
     out = solve_elastic_grid(sysm)
     mu_c = out["theta"][0]
+    # The cone level is directly observable on the yield set from the stress
+    # channel, and the plateau estimate reads it to 0.07 percent on NCLaw's
+    # sand. The momentum-balance solve adds value only when its rows are
+    # consistent; when its relative residual exceeds the bar below, the rows
+    # carry assembly bias the gate did not remove (measured on their sand:
+    # solve 0.870 at residual 0.48 against a plateau of 0.5676, truth 0.5680),
+    # and the plateau is the estimate. Both numbers are always recorded.
+    solve_residual_bar = 0.15
+    mu_c_solve = float(mu_c)
+    used = "solve"
+    if float(out.get("residual_rel", 0.0)) > solve_residual_bar:
+        mu_c = mu_plateau
+        used = "plateau"
     out.update({"ke_frac_used": ke_frac_used,
+                "mu_c_solve": mu_c_solve,
+                "mu_estimator_used": used,
+                "solve_residual_bar": solve_residual_bar,
                 "mu_plateau_stage1": mu_plateau,
                 "friction_angle_stage1": mu_to_friction(mu_plateau),
                 "yield_band": float(yield_band),
