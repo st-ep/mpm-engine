@@ -713,7 +713,7 @@ def identify_yield(arr: dict, mu_hat: float, plateau_pct: float = 99.9,
 def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
                       margin_cells: float = 3.0, eps_gamma: float = 0.02,
                       gd_min: float = 1.0, yield_frac_min: float = 0.97,
-                      log=print) -> dict:
+                      yield_band: float = 0.05, log=print) -> dict:
     """Constant-friction Mode C in 3D: one column, mu = sqrt(J2) / p.
 
     sigma = -p I + mu * p * (2 D / |gamma_dot|_eps) is linear in mu with the
@@ -757,9 +757,30 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
     p = pressure_from_cauchy_3d_trace(arr["stress"])
     eye = np.eye(3)[None]
 
+    # Yield-set gate. The cone relation holds AT yield only; a shearing particle
+    # whose stress is elastic sits below the cone and biases a global fit high
+    # (measured on NCLaw's sand: the ungated solve returns phi 38.9 against 25,
+    # while the pointwise cone reading r = sqrt(J2)/p on the yield set is 0.5680
+    # against a truth of 0.56802). Stage 1 estimates the cone level as the mode
+    # of r over shearing high-pressure particles, the plateau logic
+    # identify_yield uses for tau_y. Stage 2 keeps only particles within
+    # yield_band of that level; sub-yield positive-pressure particles then gate
+    # their nodes out as the docstring above always intended.
+    dev = arr["stress"] - (np.trace(arr["stress"], axis1=2, axis2=3) / 3.0
+                           )[:, :, None, None] * eye
+    j2 = 0.5 * np.sum(dev * dev, axis=(2, 3))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        r_cone = np.sqrt(j2) / p
+    cand = np.isfinite(r_cone) & (p > np.nanpercentile(p[p > 0], 25)) & (gd > gd_min)
+    r_pool = r_cone[cand]
+    hist, edges = np.histogram(r_pool, bins=256,
+                               range=(0.0, float(np.nanpercentile(r_pool, 99.5))))
+    mu_plateau = float(0.5 * (edges[np.argmax(hist)] + edges[np.argmax(hist) + 1]))
+
     def columns_fn(f: int):
         finite = np.isfinite(p[f]) & np.isfinite(D[f]).all(axis=(1, 2))
-        at_yield = finite & (p[f] > 0.0) & (gd[f] > gd_min)
+        on_cone = np.abs(r_cone[f] / max(mu_plateau, 1e-9) - 1.0) < yield_band
+        at_yield = finite & (p[f] > 0.0) & (gd[f] > gd_min) & on_cone
         # a cohesionless particle at or below zero pressure is stress free:
         # sand_return_mapping sets F_elastic = U V^T when tr eps >= 0, measured
         # here as ||sigma|| of order 0.4 Pa against 1e4 Pa in the bulk. Such a
@@ -826,6 +847,9 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
     out = solve_elastic_grid(sysm)
     mu_c = out["theta"][0]
     out.update({"ke_frac_used": ke_frac_used,
+                "mu_plateau_stage1": mu_plateau,
+                "friction_angle_stage1": mu_to_friction(mu_plateau),
+                "yield_band": float(yield_band),
                 "mu_c": mu_c, "friction_angle": mu_to_friction(mu_c),
                 "refused": False, "row_survival": sysm.row_survival,
                 "n_rows_before_gating": sysm.n_rows_before_gating,
