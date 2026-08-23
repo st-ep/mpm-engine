@@ -31,6 +31,10 @@ CELLS: dict[str, tuple[str, str, str]] = {
     "plasticine_bunny_mild": ("plasticine", "plasticine_bunny_mild", "their held-out mesh"),
     "sand_blub_mild": ("sand", "sand_blub_mild", "their held-out mesh"),
     "water_spot_mild": ("water", "water_spot_mild", "their held-out mesh"),
+    "jelly_cross": ("jelly", "jelly_cross", "their trajectory vs our recovered law"),
+    "plasticine_cross": ("plasticine", "plasticine_cross", "their trajectory vs our recovered law"),
+    "sand_cross": ("sand", "sand_cross", "their trajectory vs our recovered law"),
+    "water_cross": ("water", "water_cross", "their trajectory vs our recovered law"),
 }
 
 
