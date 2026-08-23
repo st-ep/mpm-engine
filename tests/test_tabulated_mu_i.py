@@ -20,6 +20,15 @@ kirchoff_stress_hencky.
 The negative control carries as much weight as the match: halving the tabulated
 friction must change the runout, or the test would pass on a material that never
 reads its table.
+
+The second pairing here is material 13 against material 9, the PARAMETRIC mu(I)
+(Jop-Forterre-Pouliquen), fed the same curve on the same log10 I grid. That is
+the pairing the re-simulation of a recovered mu(I) curve actually relies on, and
+the two kernels differ only in where mu comes from: material 9 evaluates
+mu_s + delta_mu I/(I + I0) inside the bisection, material 13 interpolates the
+table. Migrated from video2sim/sim/check_tabulated_mu_i.py, which this replaces;
+that probe ran the same comparison on a 48-cell grid with 10944 particles and
+measured relative L2 6.1e-07, against 1.5e-06 on this smaller scene.
 """
 from __future__ import annotations
 
@@ -30,6 +39,11 @@ FRICTION_DEG = 25.0
 STEPS = 1500
 DT = 2.0e-4
 N_GRID = 24
+
+# the parametric mu(I) curve both materials are fed in the second pairing
+POULIQUEN = {"mu_s": 0.38, "delta_mu": 0.26, "I0": 0.30}
+GRAIN = {"grain_diameter": 1.0e-3, "grain_density": 2650.0}
+SMIN, SMAX, N_TABLE = -4.0, 0.0, 256
 
 
 def _collapse(material: str, extra: dict) -> np.ndarray:
@@ -106,3 +120,40 @@ def test_a_softer_table_changes_the_runout(drucker_prager):
         "halving the tabulated friction did not spread the column further, so "
         "the table is not being read"
     )
+
+
+def _pouliquen_table() -> dict:
+    """The parametric mu(I) curve sampled on the dump-schema grid, log10 I in [-4, 0]."""
+    inertial = 10.0 ** np.linspace(SMIN, SMAX, N_TABLE)
+    mu = POULIQUEN["mu_s"] + POULIQUEN["delta_mu"] * inertial / (inertial + POULIQUEN["I0"])
+    return {"eta_table": mu.tolist(), "eta_table_smin": SMIN, "eta_table_smax": SMAX, **GRAIN}
+
+
+@pytest.fixture(scope="module")
+def parametric_mu_i() -> np.ndarray:
+    return _collapse("mu_i_sand", {**POULIQUEN, **GRAIN})
+
+
+def test_pouliquen_table_matches_the_parametric_mu_i(parametric_mu_i):
+    x_tab = _collapse("tabulated_mu_i", _pouliquen_table())
+    assert np.isfinite(x_tab).all() and np.isfinite(parametric_mu_i).all()
+    spread = _runout(parametric_mu_i)
+    assert spread > 0.1, f"the column barely collapsed (runout {spread:.3f} m)"
+    rel = float(np.linalg.norm(x_tab - parametric_mu_i)
+                / max(np.linalg.norm(parametric_mu_i), 1e-12))
+    assert rel < 5.0e-3, (
+        f"tabulated mu(I) drifts from the parametric kernel on the same curve: "
+        f"relative L2 {rel:.2e} over a {spread:.3f} m runout")
+
+
+def test_a_wrong_constant_table_differs_from_the_parametric_curve(parametric_mu_i):
+    # not vacuous: a low constant mu spreads the column centimetres further.
+    # Position relative L2 is dominated by the absolute coordinate (~0.5 m), so
+    # this one is scored as an RMS displacement in millimetres.
+    x_const = _collapse("tabulated_mu_i", {"eta_table": np.full(N_TABLE, 0.15).tolist(),
+                                           "eta_table_smin": SMIN, "eta_table_smax": SMAX,
+                                           **GRAIN})
+    rms_mm = float(np.sqrt(((x_const - parametric_mu_i) ** 2).sum(-1).mean())) * 1e3
+    assert rms_mm > 1.0, (
+        f"a constant mu = 0.15 table moved the column only {rms_mm:.2f} mm from "
+        "the Pouliquen curve, so the table is not being read")
