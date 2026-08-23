@@ -8,7 +8,7 @@ mpm_engine/out/nclaw_cross_generalize/dumps/<material>_<scene>_truth.npz:
      parameters and (b) the recovered parameters, at their own frame cadence;
   3. score both against their trajectory in their metric.
 
-Row (a) is the engine-gap floor: no identifier can score below it. The ratio
+Row (a) is the error at the true parameters: no identification method can score below it. The ratio
 (b)/(a) is the identification excess, the only part of a cross-engine cell
 that identification quality controls.
 
@@ -24,7 +24,7 @@ matches their integrator exactly, and their sand needs it because our CFL picks
 two substeps where they take one. --bisect runs the dataset scene's truth-theta
 leg with one behavior at a time so the floor's drop is attributable.
 
-Run:  .venv/bin/python -m experiments.nclaw.cross_floor plasticine \
+Run:  .venv/bin/python -m experiments.nclaw.cross_engine_error plasticine \
           [--nclaw-bc] [--nclaw-law] [--substeps=1] [--bisect]
 """
 from __future__ import annotations
