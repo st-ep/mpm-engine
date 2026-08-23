@@ -135,7 +135,12 @@ MATERIALS: dict[str, dict] = {
         "theta_names": ["mu", "lam"],
     },
     "plasticine": {
-        "engine": "plasticine", "law": "vonmises", "rho": 1000.0,
+        # their dataset config is SigmaElasticity + VonMisesPlasticity, i.e.
+        # HENCKY elasticity with the von Mises return: our "metal" (mat 1).
+        # The fork's "plasticine" (mat 5) pairs the SAME return map with
+        # fixed-corotated elasticity, which is their corotated_plasticine
+        # variant, not the one their dataset uses (user-verified config).
+        "engine": "metal", "law": "vonmises", "rho": 1000.0,
         "truth": {"E": 3.0e5, "nu": 0.25, "yield_stress": 5.0e3},
         "theta_names": ["mu", "lam", "yield_stress"],
     },
