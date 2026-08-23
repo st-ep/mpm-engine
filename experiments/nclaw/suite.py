@@ -458,6 +458,9 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
     kw_bc = None
     if nclaw_bc:
         kw_bc = dict(NCLAW_GRID_SEMANTICS)
+        # their sim/low.yaml (grid 20) sets 1e-7; high and super set 0.0, so
+        # the epsilon follows the trajectory's grid rather than a constant
+        kw_bc["mass_eps"] = 1.0e-7 if n_grid == 20 else 0.0
         if isinstance(nclaw_bc, dict):
             kw_bc.update(nclaw_bc)
         s.set_grid_semantics(**kw_bc)
@@ -537,7 +540,7 @@ def stage_gen(material: str, shapes: list[str], force: bool = False,
 # ---------------------------------------------------------------------------
 
 def nclaw_position_mse(truth: Path, pred: Path, grid_lim: float = GRID_LIM,
-                       frame_step: int = 5) -> dict:
+                       frame_step: int = 5, strict: bool = True) -> dict:
     """NCLaw's metric: mean over particles AND coordinates of the squared
     position difference, in their unit box, averaged over sampled frames.
 
@@ -548,6 +551,14 @@ def nclaw_position_mse(truth: Path, pred: Path, grid_lim: float = GRID_LIM,
     """
     t = np.load(truth)
     r = np.load(pred)
+    if strict and t["x"].shape != r["x"].shape:
+        # a rollout the dump writer truncated at a NaN would otherwise be
+        # scored over its successful prefix, which flatters a divergent law;
+        # callers that handle divergence themselves pass strict=False
+        raise ValueError(
+            f"shape mismatch: truth {t['x'].shape} vs prediction "
+            f"{r['x'].shape} ({Path(pred).name}); a truncated rollout is a "
+            "divergence, not a score")
     nf = min(t["x"].shape[0], r["x"].shape[0])
     n = min(t["x"].shape[1], r["x"].shape[1])
     diff = (t["x"][:nf, :n] - r["x"][:nf, :n]) / grid_lim
@@ -658,7 +669,8 @@ def _hencky_dev_norm(F: np.ndarray) -> np.ndarray:
 
 def identify_elastic(arr: dict, window_frames: int = 26, frame_stride: int = 2,
                      margin_cells: float = 3.0,
-                     frames: list[int] | None = None, log=print) -> dict:
+                     frames: list[int] | None = None,
+                     columns: str = "corotated", log=print) -> dict:
     """(mu, lambda) of the fixed-corotated pair by the Step 0 time-weak assembly.
 
     ``frames`` restricts the fit to an explicit uniformly spaced frame list.
@@ -685,7 +697,7 @@ def identify_elastic(arr: dict, window_frames: int = 26, frame_stride: int = 2,
         arr["frame_dt"] * frame_stride, arr["n_grid"], arr["grid_lim"],
         frames=frames, window_frames=window_frames,
         collider_planes=wall_planes(arr["n_grid"], arr["grid_lim"]),
-        collider_margin_cells=margin_cells)
+        collider_margin_cells=margin_cells, columns=columns)
     if sysm.n_rows < 8:
         return {"refused": True, "reason": "no surviving rows",
                 "n_rows": sysm.n_rows,
@@ -704,7 +716,7 @@ def identify_elastic(arr: dict, window_frames: int = 26, frame_stride: int = 2,
 
 
 def identify_yield(arr: dict, mu_hat: float, plateau_pct: float = 99.9,
-                   plateau_frac_min: float = 1.0e-3, log=print) -> dict:
+                   plateau_frac_min: float = 0.05, log=print) -> dict:
     """von Mises yield from the saturation of the deviatoric Hencky strain.
 
     The return map caps ||dev eps|| at yield / (2 mu), so the cap IS the yield
@@ -720,14 +732,28 @@ def identify_yield(arr: dict, mu_hat: float, plateau_pct: float = 99.9,
         return {"refused": True, "reason": "no finite deformation gradient"}
     cap = float(np.percentile(vals, plateau_pct))
     at_cap = float((vals >= 0.98 * cap).mean())
+    # a capped distribution has an atom at its maximum; a smooth one does not.
+    # The old gate (at_cap < 1e-3) was vacuous: about 0.1 percent of samples
+    # sit above the 99.9th percentile by construction, and widening the band
+    # only raises the fraction, so nothing could ever refuse. The gate now
+    # requires real mass in the top band AND that the band be denser than the
+    # band just below it, which a smooth tail cannot satisfy (uniform gives
+    # about 2 percent in each band, ratio 1; the plasticine cap gives tens of
+    # percent against about one, measured).
+    below = float(((vals >= 0.94 * cap) & (vals < 0.96 * cap)).mean())
+    concentration = at_cap / max(below, 1e-6)
     res = {"eps_y": cap, "plateau_fraction": at_cap,
+           "plateau_concentration": concentration,
            "yield_stress": float(2.0 * mu_hat * cap),
            "plateau_pct": plateau_pct}
-    if at_cap < plateau_frac_min:
+    if at_cap < plateau_frac_min or concentration < 3.0:
         res.update({"refused": True,
-                    "reason": ("no yield plateau: only "
-                               f"{100 * at_cap:.4f} percent of particle-frames "
-                               "sit at the cap, so this is a lower bound")})
+                    "reason": ("no yield plateau: "
+                               f"{100 * at_cap:.2f} percent of particle-frames "
+                               f"in the top band, concentration {concentration:.2f} "
+                               "against the band below (a cap needs >= "
+                               f"{100 * plateau_frac_min:g} percent at >= 3x), "
+                               "so this is a lower bound")})
     else:
         res["refused"] = False
     log(f"[ident] yield eps_y={cap:.4e} plateau_frac={at_cap:.2e} "
@@ -1108,7 +1134,9 @@ def stage_identify(material: str, n_grid: int = N_GRID,
     arr = _load_arrays(cube)
     ident: dict = {"source_dump": cube.name, "n_grid": arr["n_grid"]}
     if material in ("jelly", "plasticine"):
-        ident["elastic"] = identify_elastic(arr, window_frames=window_frames, log=log)
+        ident["elastic"] = identify_elastic(
+            arr, window_frames=window_frames,
+            columns="hencky" if material == "plasticine" else "corotated", log=log)
         if material == "plasticine" and not ident["elastic"].get("refused", True):
             ident["yield"] = identify_yield(arr, ident["elastic"]["mu"], log=log)
     elif material == "sand":
@@ -1329,8 +1357,8 @@ def stage_report(material: str, log=print) -> dict:
     results = {
         "schema_version": "nclaw-suite-1.0",
         "material": material,
-        "git_rev_video2sim": _git_rev(ROOT),
-        "git_rev_mpm_engine": _git_rev(ROOT / "mpm_engine"),
+        "git_rev_mpm_engine": _git_rev(ROOT),
+        "git_rev_staging_tree": _git_rev(ROOT.parent),
         "protocol": {
             "grid_lim": GRID_LIM, "n_grid": ident.get("n_grid", N_GRID),
             "bound_cells": BOUND_CELLS, "collider_bc": "slip (freeslip)",

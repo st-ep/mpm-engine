@@ -111,6 +111,8 @@ __all__ = [
     "bspline_stencil",
     "polar_rotation",
     "corotated_cauchy_columns",
+    "hencky_cauchy_columns",
+    "ELASTIC_COLUMNS",
     "assemble_elastic_grid",
     "assemble_elastic_timeweak",
     "assemble_columns_timeweak",
@@ -219,6 +221,31 @@ def corotated_cauchy_columns(F: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     s_mu = (2.0 / J)[:, None, None] * 0.5 * (A + np.transpose(A, (0, 2, 1)))
     s_lam = (J - 1.0)[:, None, None] * np.eye(3)[None, :, :]
     return s_mu, s_lam
+
+
+def hencky_cauchy_columns(F: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Cauchy stress columns of the Hencky pair, sigma = mu s_mu + lam s_lam.
+
+        tau_mu = 2 U diag(log sig) U^T      tau_lam = tr(log sig) I
+        s_*    = tau_* / J
+
+    The columns for a material whose generating elasticity is SigmaElasticity
+    (NCLaw's plasticine). Identifying such data with the corotated columns is
+    exact only at small strain; at the von Mises cap of about 2 percent
+    deviatoric strain the difference is second order but measurable.
+    """
+    F = np.asarray(F, dtype=float)
+    U, sig, _ = np.linalg.svd(F)
+    eps = np.log(np.clip(sig, 1e-12, None))
+    J = np.exp(eps.sum(-1))
+    tau_mu = 2.0 * np.einsum("pij,pj,pkj->pik", U, eps, U)
+    s_mu = tau_mu / J[:, None, None]
+    s_lam = (eps.sum(-1) / J)[:, None, None] * np.eye(3)[None, :, :]
+    return s_mu, s_lam
+
+
+ELASTIC_COLUMNS = {"corotated": corotated_cauchy_columns,
+                   "hencky": hencky_cauchy_columns}
 
 
 def _collider_node_mask(
@@ -403,7 +430,8 @@ def _particle_validity(
 
 
 def _stress_columns_for_frame(
-    F_f: np.ndarray, vol0: np.ndarray, ok_p: np.ndarray
+    F_f: np.ndarray, vol0: np.ndarray, ok_p: np.ndarray,
+    columns: str = "corotated",
 ) -> np.ndarray:
     """Volume-weighted (P, 2, 3, 3) stress columns, invalid particles set to F = I.
 
@@ -412,7 +440,7 @@ def _stress_columns_for_frame(
     never reaches a surviving row.
     """
     Fs = np.where(ok_p[:, None, None], F_f, np.eye(3)[None])
-    s_mu, s_lam = corotated_cauchy_columns(Fs)
+    s_mu, s_lam = ELASTIC_COLUMNS[columns](Fs)
     J = np.linalg.det(Fs)
     Vcur = J * vol0                          # current volume, J V^0
     return Vcur[:, None, None, None] * np.stack([s_mu, s_lam], axis=1)
@@ -619,6 +647,7 @@ def assemble_elastic_timeweak(
     window_taper_cells: float | None = 1.0,
     window_modes: int = 4,
     time_power: int = 2,
+    columns: str = "corotated",
 ) -> ElasticGridSystem:
     """Time-weak variant: no acceleration data, so no time differentiation.
 
@@ -650,7 +679,7 @@ def assemble_elastic_timeweak(
                                           max_hencky)
         if ok_p.sum() < min_particles:
             return None
-        return _stress_columns_for_frame(F[f], vol0, ok_p), None, ok_p, hencky
+        return _stress_columns_for_frame(F[f], vol0, ok_p, columns=columns), None, ok_p, hencky
 
     return assemble_columns_timeweak(
         x, v, mass, g, frame_dt, n_grid, grid_lim, columns_fn, n_columns=2,

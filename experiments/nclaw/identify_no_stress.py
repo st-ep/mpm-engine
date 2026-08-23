@@ -448,7 +448,9 @@ def stage_identify_no_stress(material: str, dump: str | Path,
             walls["friction_scan_s"] = time.time() - t1
     elif material in ("jelly", "plasticine"):
         ident["elastic"] = suite.identify_elastic(
-            arr, window_frames=window_frames, log=log)
+            arr, window_frames=window_frames,
+            columns="hencky" if material == "plasticine" else "corotated",
+            log=log)
         if material == "plasticine" and not ident["elastic"].get("refused", True):
             mu_hat, lam_hat = ident["elastic"]["mu"], ident["elastic"]["lam"]
             ident["yield"] = suite.identify_yield(arr, mu_hat, log=log)

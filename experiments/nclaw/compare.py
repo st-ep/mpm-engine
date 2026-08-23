@@ -208,6 +208,18 @@ def main(material: str, trajectories: str | Path | None = None,
     print(f"[floor] wrote {path}")
 
 
+# The canonical cross-engine settings per material, the ones every reported
+# table used. Invoking the runner bare applies them; passing any compatibility
+# flag is an explicit override and is honored as given (that is what an
+# ablation is), so nothing silently changes under an existing command.
+CANONICAL = {
+    "jelly": {"nclaw_bc": True, "substeps": 1},
+    "plasticine": {"nclaw_bc": True},
+    "sand": {"nclaw_bc": True, "nclaw_law": True, "substeps": 1},
+    "water": {"nclaw_bc": True, "nclaw_law": True},
+}
+
+
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     flags = {a for a in sys.argv[1:] if a.startswith("--")}
@@ -219,7 +231,14 @@ if __name__ == "__main__":
                  "positions_only" if "--positions-only" in flags else None)
     dev = next((f.split("=", 1)[1] for f in flags
                 if f.startswith("--device=")), "cpu")
-    main(args[0] if args else "plasticine", trajectories=traj,
-         nclaw_bc="--nclaw-bc" in flags, bisect="--bisect" in flags,
-         nclaw_law="--nclaw-law" in flags, substeps=sub, tier=tier_flag,
-         device=dev)
+    mat = args[0] if args else "plasticine"
+    compat_given = any(f.startswith(("--nclaw-bc", "--nclaw-law", "--substeps"))
+                       for f in flags)
+    if compat_given or "--bisect" in flags:
+        kw = {"nclaw_bc": "--nclaw-bc" in flags,
+              "nclaw_law": "--nclaw-law" in flags, "substeps": sub}
+    else:
+        kw = dict(CANONICAL.get(mat, {}))
+        print(f"[compare] canonical settings for {mat}: {kw}")
+    main(mat, trajectories=traj, bisect="--bisect" in flags,
+         tier=tier_flag, device=dev, **kw)

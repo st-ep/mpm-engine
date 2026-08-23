@@ -55,7 +55,10 @@ def scan_parameter(material: str, identify_dump: str | Path, param: str,
                       theta={**theta_base, param: value}, cloud=cloud,
                       nclaw_bc=nclaw_bc, nclaw_law=nclaw_law,
                       substeps=substeps, log=lambda *a: None)
-        mse = float(nclaw_position_mse(identify_dump, pred)["mse"])
+        sc = nclaw_position_mse(identify_dump, pred, strict=False)
+        import numpy as np
+        n_expected = int(np.load(identify_dump)["x"].shape[0])
+        mse = float("inf") if sc["n_frames"] < n_expected else float(sc["mse"])
         tried[value] = mse
         log(f"[scan] {material} {param}={value:g} mse={mse:.3e}")
         return mse

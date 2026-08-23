@@ -276,6 +276,12 @@ def resolve_manifest(nclaw_dir: Path, manifest: dict | str | Path | None,
 def frame_files(nclaw_dir: Path) -> list[Path]:
     """Their frame pickles in step order, from 0000.pt upward."""
     files = sorted(Path(nclaw_dir).glob("*.pt"), key=lambda p: int(p.stem))
+    stems = [int(f.stem) for f in files]
+    gaps = set(b - a for a, b in zip(stems, stems[1:]))
+    if len(gaps) > 1:
+        raise ManifestError(
+            f"frame files are not uniformly spaced (gaps {sorted(gaps)}); a "
+            "missing file would silently corrupt the time axis")
     if len(files) < 3:
         raise ManifestError(
             f"{nclaw_dir} holds {len(files)} '*.pt' frame files; the ingest needs at "
@@ -528,6 +534,13 @@ def read_nclaw_dir(nclaw_dir: str | Path, manifest: dict | str | Path | None,
     if "C" in raw:
         C = _rotate_tensor(R, raw["C"].astype(np.float64))
         probe = l_convention_from_arrays(x, v, C, k=int(man["mls_k"]))
+        best = min(probe["median_err_vs_L"], probe["median_err_vs_LT"])
+        if best > 0.15 and not man.get("l_convention"):
+            raise ManifestError(
+                f"L-convention probe is ambiguous (residuals "
+                f"{probe['median_err_vs_L']:.3f} vs {probe['median_err_vs_LT']:.3f}, "
+                "both poor); pin l_convention in the manifest instead of "
+                "letting the smaller of two bad fits decide")
         transposed = probe["median_err_vs_LT"] < probe["median_err_vs_L"]
         L = np.swapaxes(C, 2, 3) if transposed else C
         prov["L"] = "measured"

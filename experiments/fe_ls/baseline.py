@@ -919,7 +919,7 @@ def _rollout(material_key: str, shape: str, vel: str, theta: dict, tag: str,
     if not pred.exists() or force:
         suite.run_scene(material_key, shape, pred, theta=theta, vel=vel,
                         cloud=cloud, log=log)
-    score = suite.nclaw_position_mse(truth, pred)
+    score = suite.nclaw_position_mse(truth, pred, strict=False)
     score.pop("per_frame", None)
     score["dump"] = pred.name
     score["truth_dump"] = truth.name

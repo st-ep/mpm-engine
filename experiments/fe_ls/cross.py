@@ -284,7 +284,7 @@ def _rollout_legs(material: str, legs: list[tuple[str, str, dict]],
                                 nclaw_law=flags.get("nclaw_law", False),
                                 substeps=flags.get("substeps"), log=log)
                 log(f"[fe-cross] {scene}/{leg} simulated in {time.time()-t0:.0f}s")
-            s = suite.nclaw_position_mse(truth, pred)
+            s = suite.nclaw_position_mse(truth, pred, strict=False)
             cell = {k: s[k] for k in ("mse", "mse_final_frame", "rmse_mm", "n_frames")}
             cell["diverged"] = bool(s["n_frames"] < n_expected)
             if cell["diverged"]:
