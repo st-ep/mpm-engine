@@ -55,12 +55,6 @@ Planning legs, and the baseline they are measured against.
                           press on a held-out larger one. The convex-identified
                           law is a material property and so size-independent; the
                           A-law plan should reach about the oracle Chamfer.
-  gns_baseline            The baseline for the two above: a PyTorch GNS
-                          (encode-process-decode over a KNN particle graph)
-                          trained on K engine rollouts and planned with the same
-                          CEM. The identified MPM needs one force probe where the
-                          GNS needs K rollouts, and the GNS is trained for a
-                          single object size, so it does not transfer.
   three_prong             Three-jaw gripper on dough: three near-cube fingertips
                           at 0, 120 and 240 degrees close radially and form a
                           three-lobed cross-section, scored by common.lobedness.
