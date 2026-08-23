@@ -76,7 +76,7 @@ BISECT_LEGS = {
 def main(material: str, trajectories: str | Path | None = None,
          nclaw_bc: bool = False, bisect: bool = False,
          nclaw_law: bool = False, substeps: int | None = None,
-         tier: str | None = None) -> None:
+         tier: str | None = None, device: str = "cpu") -> None:
     DUMPS = Path(trajectories) if trajectories else DEFAULT_TRAJECTORIES
     print(f"[compare] trajectories from {DUMPS}")
     from experiments.nclaw.suite import (
@@ -105,7 +105,7 @@ def main(material: str, trajectories: str | Path | None = None,
                 t0 = time.time()
                 run_scene(material, "dataset", pred, theta=dict(theta_true),
                           cloud=cloud, nclaw_bc=mode, nclaw_law=nclaw_law,
-                          substeps=substeps)
+                          substeps=substeps, device=device)
                 print(f"[bisect] {leg} simulated in {time.time() - t0:.0f}s")
             s = nclaw_position_mse(truth, pred)
             rows[leg] = {k: s[k] for k in
@@ -176,7 +176,7 @@ def main(material: str, trajectories: str | Path | None = None,
                 t0 = time.time()
                 run_scene(material, scene, pred, theta=dict(theta), cloud=cloud,
                           nclaw_bc=nclaw_bc, nclaw_law=nclaw_law,
-                          substeps=substeps)
+                          substeps=substeps, device=device)
                 print(f"[floor] {scene}/{leg} simulated in {time.time() - t0:.0f}s")
             s = nclaw_position_mse(truth, pred)
             cells[leg] = {k: s[k] for k in
@@ -217,6 +217,9 @@ if __name__ == "__main__":
                  if f.startswith("--trajectories=")), None)
     tier_flag = ("no_stress" if "--no-stress" in flags else
                  "positions_only" if "--positions-only" in flags else None)
+    dev = next((f.split("=", 1)[1] for f in flags
+                if f.startswith("--device=")), "cpu")
     main(args[0] if args else "plasticine", trajectories=traj,
          nclaw_bc="--nclaw-bc" in flags, bisect="--bisect" in flags,
-         nclaw_law="--nclaw-law" in flags, substeps=sub, tier=tier_flag)
+         nclaw_law="--nclaw-law" in flags, substeps=sub, tier=tier_flag,
+         device=dev)

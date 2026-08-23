@@ -384,7 +384,8 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
               t_end: float = T_END, n_frames: int = N_FRAMES,
               cfl: float = 0.35, vel: str = "preset", cloud: dict | None = None,
               nclaw_bc: bool | dict = False, nclaw_law: bool = False,
-              substeps: int | None = None, log=print) -> Path:
+              substeps: int | None = None, device: str = "cpu",
+              log=print) -> Path:
     """One truth or rollout trajectory, dumped schema-valid with F and V0.
 
     ``cloud`` (from ``cloud_from_dump``) replaces the analytic seeding with a
@@ -445,15 +446,15 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
     log(f"[gen] {material}/{shape} N={len(pts)} grid={n_grid}^3 c={c:.0f}m/s "
         f"dt={dt:.2e} sub={substeps} frames={n_frames} theta={theta or 'truth'}")
 
-    s = MPM_Simulator_WARP(len(pts), device="cpu")
+    s = MPM_Simulator_WARP(len(pts), device=device)
     s.load_initial_data_from_torch(
         torch.from_numpy(np.ascontiguousarray(pts)),
         torch.from_numpy(np.ascontiguousarray(vol0)),
-        n_grid=n_grid, grid_lim=grid_lim, device="cpu")
+        n_grid=n_grid, grid_lim=grid_lim, device=device)
     s.import_particle_v_from_torch(
-        torch.from_numpy(np.ascontiguousarray(v0)), device="cpu")
-    s.set_parameters_dict(kw, device="cpu")
-    s.finalize_mu_lam(device="cpu")
+        torch.from_numpy(np.ascontiguousarray(v0)), device=device)
+    s.set_parameters_dict(kw, device=device)
+    s.finalize_mu_lam(device=device)
     kw_bc = None
     if nclaw_bc:
         kw_bc = dict(NCLAW_GRID_SEMANTICS)
@@ -501,7 +502,7 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
         if frame == n_frames:
             break
         for _ in range(substeps):
-            s.p2g2p(step, dt, device="cpu")
+            s.p2g2p(step, dt, device=device)
             step += 1
     writer.finalize(out_path, frame_dt=frame_dt)
     log(f"[gen] wrote {out_path.name} ({time.time() - t0:.0f}s)")
