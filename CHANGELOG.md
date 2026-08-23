@@ -165,6 +165,18 @@
   patch test that recovers (mu, lambda) to solver precision, and order-one
   negative controls for the factor of two in the mu column, the load sign, and
   the current-versus-reference volume pairing.
+- `tests/test_mu_i_return_map.py` and `tests/test_mu_i_phi_dilatancy.py`, plus two
+  tests in `tests/test_tabulated_mu_i.py`, asserting what the four mu(I)
+  verification probes in `video2sim/sim` only printed. The probes are archived
+  with a pointer to the covering test. Two findings from writing them: the
+  existing tabulated test locked material 13 to material 2 at a constant mu, not
+  to the parametric material 9 the probe checked, and the probe's `corr(I, Phi)`
+  statistic does not separate the dilatant material 11 from material 9 (material
+  9 gives -0.452), so the new test asserts binned median Phi against Phi_c(I)
+  instead, where material 11 tracks to 0.0022 and material 9 misses by 0.0245.
+  `smoke_mu_i_phi.py` got no test: it checked that material 11 equals material 9,
+  which stopped being true when material 11 gained its own pressure and stress
+  branches.
 - `ident/io/schema.py`: `KNOWN_LAWS`, extending the dump law tag with
   `corotated`, `vonmises`, `drucker_prager`, and `eos_fluid` so the
   NCLaw-matched comparison can write schema-valid dumps for its three
@@ -173,6 +185,44 @@
 
 ### Changed
 
+- `experiments/` is now campaigns and an archive, nothing flat. Five campaigns
+  are kept, each a package with a stages CLI, artifacts under `out/<name>/`, a
+  test, and a row in the rewritten `experiments/README.md`, which reads as the
+  index of what each one established: `nclaw`, `elastic`, `robotics`, `diffsim`,
+  `fe_ls`. Everything else moved to `experiments/archive/` or
+  `../sim/archive/` rather than being deleted, so paths in the writeups keep
+  resolving.
+  - `experiments/elastic/`: the eight-script elastic drop family from
+    `video2sim/sim` (elastic_drop, elastic_grid_gate, elastic_identify_sequential,
+    plastic_drop, plastic_identify_sequential, hyperelastic, hyperelastic_fe,
+    sample_complexity) behind one CLI. `core.py` holds the single version of the
+    drop scene, the dump reader, the radial interior test functions, the
+    rotation-invariant validity filter, the FCR and Hencky stress bases, the row
+    assembly and the grid-consistent recovery; those had two, and in four cases
+    eight, drifting copies. Every headline number was reproduced from the
+    consolidated code on the dumps in the tree before the originals were deleted:
+    sphere radial E error 0.0034888047331791405, cube radial 0.134340294155481,
+    grid gate sphere timeweak 0.0010229504340479867 and cube 0.000692258814248059
+    with all four acceptance flags true, Mooney gentle probe C10 / C01 / Kbulk
+    0.22101 / 0.36008 / 0.08380 at cond 713.42 over 5376 rows. The table is in
+    `experiments/elastic/README.md`.
+  - One behaviour change inside that move: the two sequential scripts filtered
+    particles on `||F - I||`, which is not frame-objective, while the rest of the
+    family had moved to `||log sigma(F)||`. `sequential.py` uses the
+    rotation-invariant filter, which moves the streamed sphere posterior E from
+    2.011713e5 to 2.006977e5, the latter being the batch least-squares estimate
+    to seven digits.
+  - `experiments/diffsim/` and `experiments/fe_ls/`: promoted from
+    `video2sim/sim/{diffmpm,diffsim_identify,fe_ls_baseline}.py` with their three
+    tests. Artifact directories `out/diffsim_baseline` and `out/fe_ls_baseline`
+    are unchanged, and both packages resolve them in the staging tree while the
+    runs live there.
+  - `experiments/robotics/`: the Franka dough chain, identify force then predict
+    then plan, with `common.py` holding the press scene, the lobedness metric and
+    the CoTracker wrapper that three or two scripts each had duplicated. The
+    press-scene extraction was checked to reproduce the inline version with zero
+    particle-position difference before substitution. The other thirteen flat
+    scripts are in `experiments/archive/`.
 - `experiments/nclaw/suite.py`: plasticine maps to fork material 1 (`metal`,
   Hencky elasticity with the von Mises return) rather than material 5
   (fixed corotated with the same return). NCLaw's plasticine dataset config is
