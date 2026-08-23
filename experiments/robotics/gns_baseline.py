@@ -40,7 +40,7 @@ TRUE = dict(E=5e5, nu=0.30, yield_stress=3000.0)
 def _rollout(action, size=(0.12, 0.08, 0.06), n_grid=32, ppc=2, n_frames=60, sub=4,
              params=None, sub_idx=None, seed=0, device="auto"):
     """One warp von-Mises press; record subsampled particle positions per frame + tool center."""
-    p = dict(TRUE);
+    p = dict(TRUE)
     if params: p.update(params)
     g = GridConfig(n_grid=n_grid, grid_lim=0.30)
     pos, vol0, floor = block(g, size=size, center=(0.15, 0.15, 0.05), ppc=ppc, seed=seed)
@@ -204,7 +204,7 @@ def compare(Ks=(2, 5, 10, 20, 40), n_test=4, epochs=40, device="auto"):
     """Data-efficiency head-to-head: GNS prediction error vs #training rollouts K, against the
     one-probe identified MPM (K-independent). Plus a cross-size transfer probe."""
     import json
-    data = np.load(OUT / "rollouts.npz"); sub_idx = data["sub_idx"]; dx = float(data["dx"])
+    data = np.load(OUT / "rollouts.npz"); sub_idx = data["sub_idx"]
     rng = np.random.default_rng(99)
     test_actions = rng.uniform(0.05, 0.35, size=(n_test, 2))
     print(f"=== GNS data-efficiency vs one-probe identified MPM ({n_test} held-out actions) ===", flush=True)

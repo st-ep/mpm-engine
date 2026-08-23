@@ -61,7 +61,6 @@ class FrankaThreeProng:
         s.set_material(vonmises(E=p["E"], nu=p["nu"], yield_stress=p["yield_stress"]))
         s.add_plane(point=(0, 0, self.floor), normal=(0, 0, 1), surface="sticky")
 
-        z_work = self.cz                                  # prong cluster centre when forming
         z_high = self.cz + lift                           # cluster starts this far above
         backend = WarpMPMBackend(solver=s)
         c0 = self._prong_centers(R0, z_high)
