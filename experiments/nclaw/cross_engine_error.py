@@ -8,7 +8,7 @@ mpm_engine/out/nclaw_cross_generalize/dumps/<material>_<scene>_truth.npz:
      parameters and (b) the recovered parameters, at their own frame cadence;
   3. score both against their trajectory in their metric.
 
-Row (a) is the error at the true parameters: no identification method can score below it. The ratio
+Row (a) runs our simulator with the correct material properties and compares it to their trajectory; whatever mismatch remains is simulator difference, and no identification method can score below it. The ratio
 (b)/(a) is the identification excess, the only part of a cross-engine cell
 that identification quality controls.
 
