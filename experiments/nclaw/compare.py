@@ -24,7 +24,7 @@ matches their integrator exactly, and their sand needs it because our CFL picks
 two substeps where they take one. --bisect runs the dataset scene's truth-theta
 leg with one behavior at a time so the floor's drop is attributable.
 
-Run:  .venv/bin/python -m experiments.nclaw.cross_engine_error plasticine \
+Run:  .venv/bin/python -m experiments.nclaw.compare sand --trajectories=/path/to/their/dumps plasticine \
           [--nclaw-bc] [--nclaw-law] [--substeps=1] [--bisect]
 """
 from __future__ import annotations
@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-DUMPS = ROOT / "out" / "nclaw_cross_generalize" / "dumps"
+DEFAULT_TRAJECTORIES = ROOT / "out" / "nclaw_cross_generalize" / "dumps"
 OUT = ROOT / "out" / "nclaw_cross_floor"
 
 # One behavior at a time, against the engine's default grid path. "off" is the
@@ -62,8 +62,11 @@ BISECT_LEGS = {
 }
 
 
-def main(material: str, nclaw_bc: bool = False, bisect: bool = False,
+def main(material: str, trajectories: str | Path | None = None,
+         nclaw_bc: bool = False, bisect: bool = False,
          nclaw_law: bool = False, substeps: int | None = None) -> None:
+    DUMPS = Path(trajectories) if trajectories else DEFAULT_TRAJECTORIES
+    print(f"[compare] trajectories from {DUMPS}")
     from experiments.nclaw.suite import (
         MATERIALS,
         cloud_from_dump,
@@ -157,6 +160,8 @@ if __name__ == "__main__":
     flags = {a for a in sys.argv[1:] if a.startswith("--")}
     sub = next((int(f.split("=", 1)[1]) for f in flags
                 if f.startswith("--substeps=")), None)
-    main(args[0] if args else "plasticine",
+    traj = next((f.split("=", 1)[1] for f in flags
+                 if f.startswith("--trajectories=")), None)
+    main(args[0] if args else "plasticine", trajectories=traj,
          nclaw_bc="--nclaw-bc" in flags, bisect="--bisect" in flags,
          nclaw_law="--nclaw-law" in flags, substeps=sub)
