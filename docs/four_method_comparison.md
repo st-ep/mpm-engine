@@ -115,9 +115,9 @@ volumetric law for water). Cells are position MSE against their trajectory.
 | jelly | dataset | 1.2e-13 | 3.0e-6 | 2.4e-4 | 81x |
 | jelly | time | 2.8e-13 | 8.8e-6 | 9.8e-4 | 111x |
 | jelly | vel mean | 9.3e-14 | 1.8e-6 | 2.4e-4 | 132x |
-| plasticine | dataset | 7.8e-12 | 7.2e-7 | 6.5e-5 | 90x |
-| plasticine | time | 1.4e-11 | 9.0e-7 | 1.4e-4 | 156x |
-| plasticine | vel mean | 5.3e-12 | 4.0e-7 | 4.6e-5 | 115x |
+| plasticine | dataset | 7.8e-12 | 3.6e-7 | 6.5e-5 | 181x |
+| plasticine | time | 1.4e-11 | 5.6e-7 | 1.4e-4 | 252x |
+| plasticine | vel mean | 5.3e-12 | 2.5e-7 | 4.6e-5 | 187x |
 | sand | dataset | 2.0e-11 | 6.2e-9 | 2.6e-5 | 4200x |
 | sand | time | 5.0e-11 | 9.1e-9 | 4.2e-5 | 4600x |
 | sand | vel mean | 3.1e-11 | 1.2e-9 | 6.5e-5 | 53000x |
@@ -267,9 +267,9 @@ The full-channel column is the addendum above.
 | jelly | dataset | 1.2e-13 | 3.0e-6 | 3.0e-6 | 2.4e-4 | 81x |
 | jelly | time | 2.8e-13 | 8.8e-6 | 8.8e-6 | 9.8e-4 | 111x |
 | jelly | vel mean | 9.3e-14 | 1.8e-6 | 1.8e-6 | 2.4e-4 | 132x |
-| plasticine | dataset | 7.8e-12 | 7.2e-7 | 7.2e-7 | 6.5e-5 | 90x |
-| plasticine | time | 1.4e-11 | 9.0e-7 | 9.0e-7 | 1.4e-4 | 156x |
-| plasticine | vel mean | 5.3e-12 | 4.0e-7 | 4.0e-7 | 4.6e-5 | 115x |
+| plasticine | dataset | 7.8e-12 | 3.6e-7 | 3.6e-7 | 6.5e-5 | 181x |
+| plasticine | time | 1.4e-11 | 5.6e-7 | 5.6e-7 | 1.4e-4 | 252x |
+| plasticine | vel mean | 5.3e-12 | 2.5e-7 | 2.5e-7 | 4.6e-5 | 187x |
 | sand | dataset | 2.0e-11 | 1.2e-8 | 6.2e-9 | 2.6e-5 | 2144x |
 | sand | time | 5.0e-11 | 1.8e-8 | 9.1e-9 | 4.2e-5 | 2381x |
 | sand | vel mean | 3.1e-11 | 2.4e-9 | 1.2e-9 | 6.5e-5 | 27023x |
@@ -279,7 +279,7 @@ The full-channel column is the addendum above.
 
 All twenty scenes beat the published cells at this tier. Recovered
 parameters: jelly E 1.93 percent low and nu 4.04 percent high, plasticine E
-1.79 percent high, nu 3.42 percent high and yield stress 1.10 percent high,
+0.90 percent low, nu 0.51 percent high and yield stress 1.00 percent low,
 sand friction 24.9755 degrees against 25 (0.098 percent low), water
 stiffness 0.54 percent high. Identification wall times, rollouts excluded:
 jelly 4.0 s, plasticine 7.9 s of which the extra yield estimator 3.4 s, sand
@@ -551,7 +551,7 @@ cells on their trajectories.
 | --- | --- | --- | --- | --- | --- | --- |
 | NCLaw, published | no (two networks) | x, v, C, elastic F via teacher forcing; test from exact initial state | learned net | learned net | learned net | 1x by definition |
 | NCLaw sys-id baseline, their run | yes | same, through their differentiable MPM | (fit) | (fit) | (fit) | 2.2e-10 on their engine |
-| ours, least squares, known form | yes | x, v, F (no stress), the no-stress tier | +1.8 % | +3.4 % | +1.1 % | beats 90x to 156x |
+| ours, least squares, known form | yes | x, v, F (no stress), the no-stress tier | -0.9 % | +0.5 % | -1.0 % | beats 169x to 252x |
 | ours, function encoder, unknown form | no (trained bases) | x, v, F, stress | +0.2 % (shear modulus) | (pair via projection) | +0.13 % | beats 60x to 1742x |
 | ours, positions only, their data (1 particle per cell) | yes, elastic pair assumed | positions and frame times alone | assumed | assumed | exact (rollout scan) | beats 6.3x to 50x |
 | ours, positions only, dense clouds (same-engine study) | yes | positions and frame times alone | -1.6 % at 27 per cell | +5.1 % | +1.9 % | not comparable (own trajectory); residual 0.21 against the 0.15 bar, reported with a warning |
@@ -594,7 +594,7 @@ identification only, rollouts excluded.
 | jelly | diff-sim converged | ours | yes | sub-percent | 8.4e-14 / 5.8e-14 | 68 to 98 min |
 | plasticine | NCLaw network | their | no | learned nets | 4.6e-5 to 1.4e-4 (reference) | 300 epochs, A6000 |
 | plasticine | NCLaw sys-id, their run | their | yes | fit | 2.2e-10 on their engine | their diff-MPM |
-| plasticine | LS known form | their | yes | E +1.8, nu +3.4, sigma_y +1.1 | beats 90x to 156x | 7.9 s |
+| plasticine | LS known form | their | yes | E -0.9, nu +0.5, sigma_y -1.0 | beats 169x to 252x | 7.9 s |
 | plasticine | FE elastic + learned yield surface | their | no | shear +0.2, sigma_y +0.13 | beats 60x to 1742x | seconds each |
 | plasticine | scan, positions only, their density | their | elastic pair assumed | sigma_y exact | beats 6.3x to 50x | 92 s |
 | plasticine | LS, positions only, 27 per cell | ours | yes | E -1.6, nu +5.1, sigma_y +1.9 | own trajectory; residual 0.21, warned | minutes |
@@ -631,3 +631,26 @@ density plus a certified-parameter path at higher observation density.
 Refusal is a capability only our rows have: wrong-class families, biased
 pressures and unreconstructable states refuse by residual instead of
 shipping a number.
+
+
+## Regeneration note (2026-08-24): Hencky columns for plasticine
+
+An external review found that plasticine, whose generating elasticity is
+SigmaElasticity (Hencky), was identified with the fixed-corotated stress
+columns, exact only at small strain. The assembly gained Hencky columns
+(also linear in mu and lambda), plasticine's identification now uses them
+at both tiers, and jelly is bit-identical under the default. Regenerated
+values, both tiers identical as before since no plasticine estimator reads
+stress: E 297289 (0.90 percent low, was 1.79 high), nu 0.2513 (0.51 high,
+was 3.42), yield 4950 (1.00 low, was 1.10 high); cells improved 1.5x to 2x
+on every scene, margins now 169x to 252x (were 90x to 156x). The
+before-values remain in the git history at 50d2826. The same review's other
+confirmed findings and their fixes: the metric now refuses shape mismatches
+(audit found zero contaminated cells), the mass epsilon follows the grid
+(zero impact, all scored trajectories are grid 20), the yield plateau gate
+is now enforceable and refuses jelly as a negative control, the canonical
+per-material settings live in the runner, the ingest refuses ambiguous
+L-convention probes and non-uniform frame spacing, and provenance keys are
+correct after the migration. Queued: full-length kinematics with a
+stress-validity mask (the one-frame horizon, bounded near one percent of a
+cell) and configuration-hashed caches.
