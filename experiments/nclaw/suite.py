@@ -102,6 +102,16 @@ VELS = {
 GRID_LIM = 1.0
 N_GRID = 32                                     # sim/high.yaml; their training used 20
 BOUND_CELLS = 3
+
+# The engine's grid semantics at NCLaw's dataset settings, for
+# MPM_Simulator_WARP.set_grid_semantics. freeslip_bound and particle_clip_cells
+# come from their configs (sim/*.yaml bound: 3; every env/blob/*.yaml
+# clip_bound: 0.5). mass_eps is 1e-7 in sim/low.yaml (num_grids 20, the grid
+# their released dataset and the ingested dumps use) and 0.0 in sim/high.yaml
+# and sim/super.yaml, so a grid-32 or grid-64 comparison should pass 0.0.
+NCLAW_GRID_SEMANTICS = {"freeslip_bound": BOUND_CELLS, "mass_eps": 1.0e-7,
+                        "empty_node_gravity": True, "mls_transfer": True,
+                        "particle_clip_cells": 0.5}
 T_END = 0.5                                     # 1000 steps of dt 5e-4
 N_FRAMES = 125                                  # our dump cadence, 4 ms
 CENTER = np.array([0.5, 0.5, 0.5])
@@ -328,13 +338,20 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
               n_grid: int = N_GRID, grid_lim: float = GRID_LIM,
               t_end: float = T_END, n_frames: int = N_FRAMES,
               cfl: float = 0.35, vel: str = "preset", cloud: dict | None = None,
-              log=print) -> Path:
+              nclaw_bc: bool | dict = False, log=print) -> Path:
     """One truth or rollout trajectory, dumped schema-valid with F and V0.
 
     ``cloud`` (from ``cloud_from_dump``) replaces the analytic seeding with a
     provided particle cloud: frame-0 positions, reference volumes and
     velocities, plus that trajectory's grid and horizon. Everything downstream
     is unchanged, so a rollout on their cloud is scored by the same metric.
+
+    ``nclaw_bc`` asks the engine for NCLaw's grid semantics
+    (``MPM_Simulator_WARP.set_grid_semantics``): ``True`` takes all of
+    ``NCLAW_GRID_SEMANTICS``, and a dict overrides individual options, which is
+    how one behavior at a time is measured. The walls come from exactly one
+    source: the engine's freeslip grid operator when ``freeslip_bound`` is set,
+    otherwise the six collider slip planes.
     """
     import warp as wp
     wp.config.quiet = True
@@ -372,12 +389,24 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
         torch.from_numpy(np.ascontiguousarray(v0)), device="cpu")
     s.set_parameters_dict(kw, device="cpu")
     s.finalize_mu_lam(device="cpu")
-    # freeslip walls on all six faces, 3-cell bound: their bc = freeslip
-    pad = BOUND_CELLS * dx
-    for pt, nrm in ((( pad, 0, 0), ( 1, 0, 0)), ((grid_lim - pad, 0, 0), (-1, 0, 0)),
-                    ((0,  pad, 0), (0,  1, 0)), ((0, grid_lim - pad, 0), (0, -1, 0)),
-                    ((0, 0,  pad), (0, 0,  1)), ((0, 0, grid_lim - pad), (0, 0, -1))):
-        s.add_surface_collider(tuple(map(float, pt)), tuple(map(float, nrm)), "slip")
+    kw_bc = None
+    if nclaw_bc:
+        kw_bc = dict(NCLAW_GRID_SEMANTICS)
+        if isinstance(nclaw_bc, dict):
+            kw_bc.update(nclaw_bc)
+        s.set_grid_semantics(**kw_bc)
+        log(f"[gen] grid semantics {kw_bc}")
+    if kw_bc is None or not kw_bc["freeslip_bound"]:
+        # freeslip walls on all six faces, 3-cell bound: their bc = freeslip.
+        # The walls come from exactly one source: these collider planes, or the
+        # grid mode's own clamp. A bisection leg that turns the mode on for one
+        # OTHER behavior keeps the planes, so the scene still has a floor and
+        # the leg isolates that behavior instead of removing the walls.
+        pad = BOUND_CELLS * dx
+        for pt, nrm in (((pad, 0, 0), (1, 0, 0)), ((grid_lim - pad, 0, 0), (-1, 0, 0)),
+                        ((0, pad, 0), (0, 1, 0)), ((0, grid_lim - pad, 0), (0, -1, 0)),
+                        ((0, 0, pad), (0, 0, 1)), ((0, 0, grid_lim - pad), (0, 0, -1))):
+            s.add_surface_collider(tuple(map(float, pt)), tuple(map(float, nrm)), "slip")
 
     writer = DumpWriter(
         s, grain_diameter=1.0e-3, rho_s=MATERIALS[material]["rho"],
@@ -393,7 +422,9 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
                "ang_vel": [float(x) for x in VELS[vel][1]],
                "bound_cells": BOUND_CELLS,
                "seeded_from": None if cloud is None else cloud["source"],
-               "collider_bc": "slip", "recovered": theta is not None})
+               "collider_bc": "freeslip_grid_op" if kw_bc else "slip",
+               "grid_semantics": kw_bc,
+               "recovered": theta is not None})
     t0 = time.time()
     step = 0
     for frame in range(n_frames + 1):

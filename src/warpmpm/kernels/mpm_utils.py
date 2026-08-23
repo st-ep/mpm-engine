@@ -888,6 +888,25 @@ def p2g_particle(state: MPMStateStruct, model: MPMModelStruct, dt: float, p: int
                     * (state.particle_v[p] + C * dpos)
                     + dt * elastic_force
                 )
+                if model.mls_transfer != 0:
+                    # MLS-MPM internal force (Hu et al. 2018, and what NCLaw's
+                    # p2g uses): the stress rides the SAME affine channel as C,
+                    # f_i = -4 inv_dx^2 V_p w_i sigma (x_i - x_p), instead of
+                    # -V_p sigma grad w_i. Both sum to zero net force and the
+                    # same net torque per particle; they differ per node by a
+                    # second-difference term.
+                    v_in_add = (
+                        weight
+                        * state.particle_mass[p]
+                        * (state.particle_v[p] + C * dpos)
+                        + weight
+                        * (
+                            (-dt * state.particle_vol[p] * 4.0
+                             * model.inv_dx * model.inv_dx)
+                            * stress
+                        )
+                        * dpos
+                    )
                 # nested on purpose: warp does NOT short-circuit `and`, and when
                 # n_cdf == 0 the tag grids are (1,1,1) placeholders that must not
                 # be indexed (pc != 0 implies the real grids exist)
@@ -939,6 +958,59 @@ def grid_normalization_and_gravity(
         # add gravity
         v_out = v_out + dt * model.gravitational_accelaration
         state.grid_v_out[grid_x, grid_y, grid_z] = v_out
+
+
+# Grid operator with freeslip wall semantics: mass division, gravity and the wall
+# clamp in one kernel. Free-surface and wall behavior differ from the default
+# path in three independent ways (approach-only wall clamp, eps-softened mass
+# division, free-fall velocity on empty nodes), each separately switchable; the
+# combination is what NCLaw's grid_op_freeslip does (nclaw/sim/mpm.py). Reached
+# only once set_grid_semantics has asked for one of them; the default kernel
+# above is untouched.
+@wp.kernel
+def grid_normalization_and_gravity_freeslip(
+    state: MPMStateStruct, model: MPMModelStruct, dt: float, lo: wp.vec3i
+):
+    grid_x, grid_y, grid_z = wp.tid()
+    grid_x = grid_x + lo[0]
+    grid_y = grid_y + lo[1]
+    grid_z = grid_z + lo[2]
+    m = state.grid_m[grid_x, grid_y, grid_z]
+    # a node left at zero stays zero through the clamp below (no component points
+    # into a wall), so the empty-node branch needs no early exit
+    v = wp.vec3(0.0, 0.0, 0.0)
+    if m > 0.0:
+        # eps-softened division: damps the fringe nodes whose mass is a rounding
+        # error of the stencil rather than a physical share
+        v = state.grid_v_in[grid_x, grid_y, grid_z] / (m + model.grid_mass_eps) \
+            + model.gravitational_accelaration * dt
+    else:
+        # a zero-mass node carries free-fall velocity into g2p, so a free surface
+        # is not gathered against a grid of resting nodes
+        if model.empty_node_gravity != 0:
+            v = model.gravitational_accelaration * dt
+
+    if model.freeslip_bound > 0:
+        b = model.freeslip_bound
+        # approach-only: the wall-normal component is zeroed only where it points
+        # INTO the wall, so separation off the wall is free. This is what freeslip
+        # means, and it is what NCLaw's grid_op_freeslip does; the index
+        # arithmetic matches theirs exactly, asymmetry included (the low face
+        # clamps b node layers, the high face b - 1).
+        if grid_x < b and v[0] < 0.0:
+            v = wp.vec3(0.0, v[1], v[2])
+        if grid_y < b and v[1] < 0.0:
+            v = wp.vec3(v[0], 0.0, v[2])
+        if grid_z < b and v[2] < 0.0:
+            v = wp.vec3(v[0], v[1], 0.0)
+        if grid_x > model.grid_dim_x - b and v[0] > 0.0:
+            v = wp.vec3(0.0, v[1], v[2])
+        if grid_y > model.grid_dim_y - b and v[1] > 0.0:
+            v = wp.vec3(v[0], 0.0, v[2])
+        if grid_z > model.grid_dim_z - b and v[2] > 0.0:
+            v = wp.vec3(v[0], v[1], 0.0)
+
+    state.grid_v_out[grid_x, grid_y, grid_z] = v
 
 
 @wp.func
@@ -1024,6 +1096,18 @@ def g2p_particle(state: MPMStateStruct, model: MPMModelStruct, dt: float, p: int
 
         state.particle_v[p] = new_v
         x_new = state.particle_x[p] + dt * new_v
+        if model.particle_clip_cells > 0.0:
+            # the advected position is clamped into
+            # [clip * dx, grid_lim - clip * dx], a hard backstop behind the wall
+            # clamp that keeps a particle's stencil inside the grid (NCLaw's
+            # per-particle clip_bound, 0.5 in every blob config)
+            cb = model.particle_clip_cells * model.dx
+            hi = model.grid_lim - cb
+            x_new = wp.vec3(
+                wp.clamp(x_new[0], cb, hi),
+                wp.clamp(x_new[1], cb, hi),
+                wp.clamp(x_new[2], cb, hi),
+            )
         if model.periodic_x != 0:
             lx = wp.float(model.grid_dim_x) * model.dx
             if x_new[0] < 0.0:
@@ -1036,11 +1120,18 @@ def g2p_particle(state: MPMStateStruct, model: MPMModelStruct, dt: float, p: int
         # (sum_node v_node[i] * d w_node/dx_j). Stored for the TrackEUCLID dump.
         state.particle_L[p] = new_F
         I33 = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
-        F_tmp = (I33 + new_F * dt) * state.particle_F[p]
+        F_rate = new_F
+        if model.mls_transfer != 0:
+            # MLS-MPM advances F with the APIC affine matrix C rather than with
+            # the gradient-weight velocity gradient L; the two agree in the
+            # summed sense but differ per particle. particle_L keeps L either
+            # way, which is what the TrackEUCLID dump documents.
+            F_rate = new_C
+        F_tmp = (I33 + F_rate * dt) * state.particle_F[p]
         state.particle_F_trial[p] = F_tmp
 
         if model.update_cov_with_F:
-            update_cov(state, p, new_F, dt)
+            update_cov(state, p, F_rate, dt)
 
 
 @wp.kernel

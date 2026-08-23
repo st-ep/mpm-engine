@@ -4,6 +4,41 @@
 
 ### Added
 
+- `MPM_Simulator_WARP.set_grid_semantics(...)`: five independent, opt-in grid and
+  transfer options, all off by default.
+  - `freeslip_bound`: freeslip walls applied inside the grid operator on the
+    outer node layers of all six faces, zeroing the wall-normal velocity only
+    where it points INTO the wall. This is what freeslip means, and it is what
+    `add_surface_collider(..., "slip")` does NOT do: the collider projects the
+    normal component out unconditionally inside its half-space, so a body
+    leaving the wall is held against it. Prefer this option for domain walls.
+  - `mass_eps`: grid velocity `mv / (m + eps)`, damping fringe nodes whose share
+    of a stencil is a rounding error rather than a physical mass.
+  - `empty_node_gravity`: zero-mass nodes carry `gravity * dt` into g2p.
+  - `mls_transfer`: MLS-MPM transfer (Hu et al. 2018), stress on the affine
+    channel and F advanced with the APIC matrix C, instead of the
+    gradient-weight internal force and velocity gradient L.
+  - `particle_clip_cells`: g2p clamps the advected position that many cells
+    inside the box.
+  Together they are NCLaw's grid operator and transfer (`nclaw/sim/mpm.py`), and
+  what they buy is measured: on NCLaw-generated plasticine trajectories the
+  cross-engine floor at truth parameters falls from 1.067e-3 to 7.8e-12 position
+  MSE (dataset scene), a factor of 1.4e8, with the wall semantics alone worth
+  141x. Asking for any of the three grid-operator options switches the
+  normalization kernel, which forces dense full-grid sweeps, disables CUDA-graph
+  capture and refuses the fused tick, because empty nodes have to be visited.
+- `tests/test_grid_semantics.py`: the options are bit-identical-when-off
+  (a stored digest of the pre-change engine's x, v and F on a standard scene),
+  the freeslip clamp arrests an approaching particle exactly and lets a
+  separating one leave at full speed on both the near and the far face, the
+  collider slip plane demonstrably does not, and `mass_eps` softens what it
+  should.
+- `experiments/nclaw/suite.py`: `run_scene(nclaw_bc=...)` and
+  `NCLAW_GRID_SEMANTICS`, so a cross-engine rollout can ask for NCLaw's grid
+  semantics; the walls then come from the grid operator instead of the six
+  collider planes. A dict overrides individual options, which is how the
+  per-behavior attribution was measured.
+
 - `experiments/nclaw/suite.py`: two rollout-only `MATERIALS` entries,
   `sand_table` (fork material 13, tabulated mu(I)) and `visc_table` (fork
   material 12, tabulated apparent viscosity), plus an `ENGINE_PASSTHROUGH` list
@@ -99,6 +134,13 @@
 
 ### Changed
 
+- `experiments/nclaw/suite.py`: plasticine maps to fork material 1 (`metal`,
+  Hencky elasticity with the von Mises return) rather than material 5
+  (fixed corotated with the same return). NCLaw's plasticine dataset config is
+  `SigmaElasticity` + `VonMisesPlasticity`, and `SigmaElasticity` is Hencky
+  (`nclaw/material/preset.py`). Measured effect on the cross-engine floor: small,
+  1.078e-3 to 1.067e-3, because the two elasticities differ at second order
+  below the 1.7 percent yield strain.
 - `solve_elastic_grid` works for any number of columns: it always returns
   `theta` and `theta_sd`, and adds the elastic names (mu, lam, E, nu) only when
   there are exactly two. A one-column law, the sand friction coefficient or the

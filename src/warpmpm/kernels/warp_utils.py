@@ -74,6 +74,16 @@ class MPMModelStruct:
     ####### for PhysGaussian: covariance
     update_cov_with_F: int
 
+    ####### grid semantics and transfer form (0/-1 = the historical default) ####
+    # Set through MPM_Simulator_WARP.set_grid_semantics. Each option is
+    # independent, and all of them are off unless asked for.
+    freeslip_bound: int    # > 0: approach-only wall clamp on the outer `bound` node layers
+    grid_mass_eps: float   # grid velocity is mv / (m + grid_mass_eps)
+    empty_node_gravity: int    # 1: zero-mass nodes carry v = gravity * dt into g2p
+    mls_transfer: int      # 1: MLS-MPM stress transfer and (I + dt C) F update
+    particle_clip_cells: float  # advected position clamped this many cells inside
+                                # the box; < 0 = no clamp
+
     ####### CPIC thin-boundary (CDF) colliders: 0 = feature off, transfers untouched
     n_cdf: int
     # periodic boundary along x: transfers wrap the x node index and advection

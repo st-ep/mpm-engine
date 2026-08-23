@@ -393,6 +393,16 @@ class MPM_Simulator_WARP:
         self.mpm_model.n_cdf = 0
         self.mpm_model.cdf_mask_off = 0
         self.mpm_model.periodic_x = 0
+
+        # Grid semantics and transfer form: all off, so the pipeline is
+        # bit-identical to the engine before set_grid_semantics existed. Every
+        # kernel branch these gate is unreachable at these values.
+        self.freeslip_grid_op = False
+        self.mpm_model.freeslip_bound = 0
+        self.mpm_model.grid_mass_eps = 0.0
+        self.mpm_model.empty_node_gravity = 0
+        self.mpm_model.mls_transfer = 0
+        self.mpm_model.particle_clip_cells = -1.0
         for name in ("grid_cdf_tag", "grid_cdf_tag_prev", "grid_cdf_block"):
             setattr(self.mpm_state, name,
                     wp.zeros(shape=(1, 1, 1), dtype=int, device=device))
@@ -810,6 +820,82 @@ class MPM_Simulator_WARP:
 
     def set_gravity(self, g):
         self.mpm_model.gravitational_accelaration = wp.vec3(g[0], g[1], g[2])
+
+    # ------------------------------------------------------------------
+    # Grid semantics and transfer form
+    # ------------------------------------------------------------------
+
+    def set_grid_semantics(self, freeslip_bound=None, mass_eps=None,
+                           empty_node_gravity=None, mls_transfer=None,
+                           particle_clip_cells=None):
+        """Choose the grid boundary semantics and the transfer form.
+
+        Five independent options; each stays as it is when left ``None``, and
+        every one is off by default, so the engine's historical behavior is
+        unchanged unless asked for.
+
+        freeslip_bound
+            Node layers at each of the six domain faces that act as freeslip
+            walls, applied inside the grid operator. The wall-normal velocity is
+            zeroed only where it points INTO the wall, so a body separating from
+            the wall keeps its whole outward velocity. This is the correct
+            reading of freeslip and it is what NCLaw's ``grid_op_freeslip`` does
+            (nclaw/sim/mpm.py); nodes with index < bound and index >
+            ``n_grid - bound`` are wall nodes. Prefer it to six
+            ``add_surface_collider(..., "slip")`` planes, which project the
+            normal component out unconditionally inside the half-space and so
+            glue a separating body to the wall. 0 turns it off.
+        mass_eps
+            Grid velocity becomes ``mv / (m + mass_eps)``, which damps the fringe
+            nodes whose share of a stencil is a rounding error rather than a
+            physical mass. NCLaw's sim configs set 1e-7 at num_grids 20 and 0.0
+            at 32 and 64.
+        empty_node_gravity
+            Zero-mass nodes carry ``gravity * dt`` into g2p rather than zero, so
+            a free surface is not gathered against a grid of resting nodes. g2p
+            samples grid velocity regardless of node mass already, so nothing
+            needs ungating there.
+        mls_transfer
+            MLS-MPM transfer (Hu et al. 2018, and what NCLaw uses): the stress
+            rides the affine channel, ``f_i = -4 inv_dx^2 V_p w_i sigma
+            (x_i - x_p)``, and F advances with the APIC matrix C instead of the
+            gradient-weight velocity gradient L. The default is the
+            gradient-weight force and L.
+        particle_clip_cells
+            g2p clamps the advected position into
+            ``[c * dx, grid_lim - c * dx]``, a backstop that keeps every
+            particle's stencil inside the grid. Negative turns it off.
+
+        Asking for any of the three grid-operator options switches the
+        normalization kernel, which forces dense full-grid sweeps and disables
+        CUDA-graph capture: empty nodes have to be visited, and neither the
+        particle-box restriction nor the active-block sweep guarantees that.
+        """
+        if mass_eps is not None:
+            self.mpm_model.grid_mass_eps = float(mass_eps)
+        if freeslip_bound is not None:
+            self.mpm_model.freeslip_bound = int(freeslip_bound)
+        if empty_node_gravity is not None:
+            self.mpm_model.empty_node_gravity = 1 if empty_node_gravity else 0
+        if mls_transfer is not None:
+            self.mpm_model.mls_transfer = 1 if mls_transfer else 0
+        if particle_clip_cells is not None:
+            self.mpm_model.particle_clip_cells = float(particle_clip_cells)
+
+        self.freeslip_grid_op = bool(
+            self.mpm_model.freeslip_bound > 0
+            or self.mpm_model.grid_mass_eps > 0.0
+            or self.mpm_model.empty_node_gravity != 0)
+        if self.freeslip_grid_op:
+            if self.mpm_model.n_cdf > 0:
+                raise ValueError(
+                    "the freeslip grid operator and CPIC (CDF) colliders are not "
+                    "combinable: the CDF path relies on the default grid operator.")
+            # empty nodes lie outside every particle box and every active block,
+            # so a restricted or sparse sweep would leave them at zero
+            self.restrict_grid = False
+            self.use_cuda_graph = False
+            self.sparse_ready = False
 
     # ------------------------------------------------------------------
     # Rigid body API
@@ -1238,7 +1324,9 @@ class MPM_Simulator_WARP:
                                           b["cur_list"], bd_v], device=device)
                 else:
                     wp.launch(
-                        kernel=grid_normalization_and_gravity,
+                        kernel=(grid_normalization_and_gravity_freeslip
+                                if self.freeslip_grid_op else
+                                grid_normalization_and_gravity),
                         dim=g_dims,
                         inputs=[self.mpm_state, self.mpm_model, dt, g_lo],
                         device=device,
@@ -1393,6 +1481,11 @@ class MPM_Simulator_WARP:
         capture uses a padded particle box and is refreshed only when the live box
         escapes the pad, so per-substep Python launch overhead disappears without the
         full-grid sweeps that made whole-substep capture lose at large grids."""
+        if self.freeslip_grid_op:
+            raise ValueError(
+                "the freeslip grid operator is not implemented in the fused tick: "
+                "the fused path normalizes over a particle box, which never visits "
+                "the empty nodes it gives free-fall velocity. Use p2g2p.")
         grid_size = (
             self.mpm_model.grid_dim_x,
             self.mpm_model.grid_dim_y,
