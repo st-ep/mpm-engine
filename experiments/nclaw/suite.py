@@ -713,7 +713,10 @@ def identify_yield(arr: dict, mu_hat: float, plateau_pct: float = 99.9,
 def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
                       margin_cells: float = 3.0, eps_gamma: float = 0.02,
                       gd_min: float = 1.0, yield_frac_min: float = 0.97,
-                      yield_band: float = 0.05, log=print) -> dict:
+                      yield_band: float = 0.05,
+                      pressure: np.ndarray | None = None,
+                      dev_stress: np.ndarray | None = None,
+                      pressure_label: str = "stress_trace", log=print) -> dict:
     """Constant-friction Mode C in 3D: one column, mu = sqrt(J2) / p.
 
     sigma = -p I + mu * p * (2 D / |gamma_dot|_eps) is linear in mu with the
@@ -732,6 +735,16 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
     Drucker-Prager solid, exact only where the two are coaxial. It is the same
     reading the mu(I) legs of this tree use, and the recovered coefficient is
     therefore an effective friction.
+
+    ``pressure`` supplies the pressure field (frames by particles, Cauchy
+    pressure in Pa) from a stated model instead of the stress trace, which is
+    what a run without the stress channel needs; ``pressure_label`` names the
+    model in the result. ``dev_stress`` supplies the matching deviatoric Cauchy
+    stress, which the yield-set gate and the cone-plateau estimator need. With
+    ``pressure`` given and ``dev_stress`` left out, the yield set is gated on
+    kinematics alone (shearing under positive pressure), the plateau estimator
+    is unavailable, and a solve whose residual exceeds the bar refuses rather
+    than falling back.
     """
     from common.conventions import (
         equivalent_shear_rate,
@@ -740,11 +753,11 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
     )
     from ident.weakform.elastic_grid import assemble_columns_timeweak, solve_elastic_grid
 
-    # the pressure is DATA to this leg, read from the 3D stress trace. An
-    # ingested folder that carries no stress channel has no oracle pressure, and
-    # the honest answer is a refusal naming the missing channel rather than a
-    # silent hydrostatic substitution.
-    if not arr["meta"].has_pressure:
+    # the pressure is DATA to this leg, read from the 3D stress trace unless the
+    # caller states a model. An ingested folder that carries no stress channel
+    # has no oracle pressure, and the honest answer is a refusal naming the
+    # missing channel rather than a silent hydrostatic substitution.
+    if pressure is None and not arr["meta"].has_pressure:
         return {"refused": True, "n_rows": 0, "n_rows_before_gating": 0,
                 "reason": ("no oracle pressure: the dump's pressure_source is "
                            f"{arr['meta'].pressure_source!r}, so the stress trace this "
@@ -754,8 +767,17 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
 
     D = sym(arr["L"])
     gd = equivalent_shear_rate(D, eps_gamma)
-    p = pressure_from_cauchy_3d_trace(arr["stress"])
     eye = np.eye(3)[None]
+    if pressure is None:
+        p = pressure_from_cauchy_3d_trace(arr["stress"])
+        dev_stress = arr["stress"] - (np.trace(arr["stress"], axis1=2, axis2=3) / 3.0
+                                      )[:, :, None, None] * eye
+        pressure_label = "stress_trace"
+    else:
+        p = np.asarray(pressure, dtype=float)
+        if p.shape != arr["x"].shape[:2]:
+            raise ValueError(f"pressure has shape {p.shape}, expected "
+                             f"{arr['x'].shape[:2]} (frames by particles)")
 
     # Yield-set gate. The cone relation holds AT yield only; a shearing particle
     # whose stress is elastic sits below the cone and biases a global fit high
@@ -766,20 +788,27 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
     # identify_yield uses for tau_y. Stage 2 keeps only particles within
     # yield_band of that level; sub-yield positive-pressure particles then gate
     # their nodes out as the docstring above always intended.
-    dev = arr["stress"] - (np.trace(arr["stress"], axis1=2, axis2=3) / 3.0
-                           )[:, :, None, None] * eye
-    j2 = 0.5 * np.sum(dev * dev, axis=(2, 3))
-    with np.errstate(divide="ignore", invalid="ignore"):
-        r_cone = np.sqrt(j2) / p
-    cand = np.isfinite(r_cone) & (p > np.nanpercentile(p[p > 0], 25)) & (gd > gd_min)
-    r_pool = r_cone[cand]
-    hist, edges = np.histogram(r_pool, bins=256,
-                               range=(0.0, float(np.nanpercentile(r_pool, 99.5))))
-    mu_plateau = float(0.5 * (edges[np.argmax(hist)] + edges[np.argmax(hist) + 1]))
+    if dev_stress is None:
+        # no deviatoric stress at all: the cone level is not observable, so the
+        # yield set is gated on kinematics alone and there is no plateau to fall
+        # back on when the solve's residual is high.
+        r_cone = None
+        mu_plateau = None
+    else:
+        dev = np.asarray(dev_stress, dtype=float)
+        j2 = 0.5 * np.sum(dev * dev, axis=(2, 3))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            r_cone = np.sqrt(j2) / p
+        cand = np.isfinite(r_cone) & (p > np.nanpercentile(p[p > 0], 25)) & (gd > gd_min)
+        r_pool = r_cone[cand]
+        hist, edges = np.histogram(r_pool, bins=256,
+                                   range=(0.0, float(np.nanpercentile(r_pool, 99.5))))
+        mu_plateau = float(0.5 * (edges[np.argmax(hist)] + edges[np.argmax(hist) + 1]))
 
     def columns_fn(f: int):
         finite = np.isfinite(p[f]) & np.isfinite(D[f]).all(axis=(1, 2))
-        on_cone = np.abs(r_cone[f] / max(mu_plateau, 1e-9) - 1.0) < yield_band
+        on_cone = (True if r_cone is None else
+                   np.abs(r_cone[f] / max(mu_plateau, 1e-9) - 1.0) < yield_band)
         at_yield = finite & (p[f] > 0.0) & (gd[f] > gd_min) & on_cone
         # a cohesionless particle at or below zero pressure is stress free:
         # sand_return_mapping sets F_elastic = U V^T when tr eps >= 0, measured
@@ -856,15 +885,19 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
     solve_residual_bar = 0.15
     mu_c_solve = float(mu_c)
     used = "solve"
-    if float(out.get("residual_rel", 0.0)) > solve_residual_bar:
+    high_residual = float(out.get("residual_rel", 0.0)) > solve_residual_bar
+    if high_residual and mu_plateau is not None:
         mu_c = mu_plateau
         used = "plateau"
     out.update({"ke_frac_used": ke_frac_used,
                 "mu_c_solve": mu_c_solve,
+                "friction_angle_solve": mu_to_friction(mu_c_solve),
                 "mu_estimator_used": used,
                 "solve_residual_bar": solve_residual_bar,
+                "pressure_source": pressure_label,
                 "mu_plateau_stage1": mu_plateau,
-                "friction_angle_stage1": mu_to_friction(mu_plateau),
+                "friction_angle_stage1": (None if mu_plateau is None
+                                          else mu_to_friction(mu_plateau)),
                 "yield_band": float(yield_band),
                 "mu_c": mu_c, "friction_angle": mu_to_friction(mu_c),
                 "refused": False, "row_survival": sysm.row_survival,
@@ -872,8 +905,17 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
                 "yield_frac_min": yield_frac_min, "gd_min": gd_min,
                 "n_shearing_frames": len(frames),
                 "shear_rate_coverage": list(sysm.strain_coverage)})
+    if high_residual and mu_plateau is None:
+        # nothing observable to fall back on: the solve's rows carry bias the
+        # kinematic gate did not remove and there is no cone level to read.
+        out.update({"refused": True,
+                    "reason": (f"solve residual {out['residual_rel']:.3f} exceeds "
+                               f"{solve_residual_bar} and no deviatoric stress is "
+                               f"available to read the cone level from, with pressure "
+                               f"from {pressure_label}")})
     log(f"[ident] friction mu_c={mu_c:.4f} -> phi={out['friction_angle']:.2f} deg "
-        f"rows={sysm.n_rows} cond={out['cond_AtA']:.2e}")
+        f"rows={sysm.n_rows} cond={out['cond_AtA']:.2e} "
+        f"pressure={pressure_label} refused={out['refused']}")
     return out
 
 
