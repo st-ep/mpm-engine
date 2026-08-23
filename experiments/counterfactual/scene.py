@@ -7,8 +7,8 @@ and the counterfactual stage edits it (obstacle, height, tilt) explicitly.
 
 The camera is orthographic and owned by this module for the same reason: the
 projection that renders the observed frames is byte-for-byte the projection
-that reprojects simulated particles onto the tracks, so no calibration step
-exists to get wrong.
+that reprojects simulated particles onto the tracks; there is no separate
+calibration step.
 """
 from __future__ import annotations
 

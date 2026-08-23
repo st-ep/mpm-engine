@@ -4,8 +4,8 @@ Every clip below runs at the IDENTIFIED parameters from identify.json, never
 the truth, rendered by the same camera that produced the observation:
 
   resim         the observed event replayed at the identified law, written as
-                a side-by-side video against the observed frames; this is the
-                validation the loop owes before any counterfactual is trusted
+                a side-by-side video against the observed frames, the
+                validation run before any counterfactual
   deeper_press  the plate driven to 85 percent of the blob height instead of
                 60: an event that never happened
   offset_press  the plate shifted a third of the blob width sideways, so the
