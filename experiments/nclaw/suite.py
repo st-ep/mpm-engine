@@ -962,6 +962,17 @@ def stage_cross(material: str, nclaw_dir: str | Path, manifest: str | Path | dic
         run_scene(material, tag, pred, theta=ident["theta_engine"], cloud=cloud, log=log)
     score = nclaw_position_mse(truth, pred)
     score["role"] = "cross_engine"
+
+    # the engine-gap control: the TRUTH parameters through our engine against
+    # their trajectory. This row is pure engine difference; the recovered-theta
+    # row above is engine difference plus identification error, so their ratio
+    # says how much of the cross-engine cell any identifier could ever remove.
+    pred_t = DUMPS / f"{material}_{tag}_nclaw_truththeta.npz"
+    if not pred_t.exists() or force:
+        run_scene(material, tag, pred_t, theta=dict(MATERIALS[material]["truth"]),
+                  cloud=cloud, log=log)
+    score_t = nclaw_position_mse(truth, pred_t)
+    score_t["role"] = "engine_gap_floor"
     out = {
         "schema_version": "nclaw-cross-1.0",
         "material": material, "scene": tag,
@@ -977,6 +988,10 @@ def stage_cross(material: str, nclaw_dir: str | Path, manifest: str | Path | dic
         "n_particles": cloud["pts"].shape[0], "t_end": cloud["t_end"],
         "mse": {k: score[k] for k in
                 ("mse", "mse_final_frame", "rmse_mm", "n_frames", "n_particles")},
+        "engine_gap_floor": {k: score_t[k] for k in
+                             ("mse", "mse_final_frame", "rmse_mm")},
+        "identification_excess_over_floor": (
+            float(score["mse"] / score_t["mse"]) if score_t["mse"] > 0 else None),
         "nclaw_published": NCLAW_PUBLISHED[material],
         "caveat": CROSS_CAVEAT,
     }
@@ -985,7 +1000,9 @@ def stage_cross(material: str, nclaw_dir: str | Path, manifest: str | Path | dic
         json.dumps(out, indent=2, default=float))
     log(f"[cross] {material}/{tag} theta={ident['theta_engine']} "
         f"MSE={score['mse']:.3e} (RMS {score['rmse_mm']:.2f} mm over "
-        f"{score['n_frames']} frames, {score['n_particles']} particles)")
+        f"{score['n_frames']} frames, {score['n_particles']} particles); "
+        f"engine-gap floor at truth theta {score_t['mse']:.3e} "
+        f"(identification excess {score['mse'] / max(score_t['mse'], 1e-300):.2f}x)")
     return out
 
 
