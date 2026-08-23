@@ -74,6 +74,66 @@ def incremental_gradients(x: np.ndarray, k: int = 16, ridge: float = 1.0e-10
     return out
 
 
+def grid_affine_increments(x: np.ndarray, dt: float, n_grid: int,
+                           grid_lim: float, mass: np.ndarray,
+                           iters: int = 2) -> np.ndarray:
+    """Per-step APIC affine matrices C from positions, (T-1, N, 3, 3).
+
+    This is the engine-kernel observer. Both engines advect particles by
+    x[n+1] = x[n] + dt v[n+1], so the backward position difference IS the
+    particle velocity. The affine matrix the F update consumes is then
+    rebuilt with the engine's own quadratic B-spline transfers: scatter the
+    velocities to the grid (P2G), read the APIC moment back (G2P), and
+    iterate that fixed point so the scatter uses the current C estimate.
+    F[n+1] = (I + dt C[n]) F[n] with C[n] this function's entry n, which
+    pairs the increment with the step it advanced, x[n] -> x[n+1].
+
+    Accuracy is set by observation density, not by the operator: the grid
+    field is recoverable only where several particles fall in a cell.
+    Measured on the plasticine throw: per-step relative error 9 to 16
+    percent at one particle per cell (NCLaw's clouds), where the compounded
+    replay fails the momentum fit's residual gate.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    T, N = x.shape[:2]
+    dx = grid_lim / n_grid
+    inv_d = 4.0 / dx ** 2
+    offs = [(i, j, k) for i in range(3) for j in range(3) for k in range(3)]
+
+    def kernel(xp):
+        base = np.floor(xp / dx - 0.5).astype(int)
+        fx = xp / dx - base
+        w = np.stack([0.5 * (1.5 - fx) ** 2, 0.75 - (fx - 1.0) ** 2,
+                      0.5 * (fx - 0.5) ** 2], 0)
+        return base, w
+
+    out = np.empty((T - 1, N, 3, 3))
+    for n in range(T - 1):
+        vp = (x[n + 1] - x[n]) / dt
+        base, w = kernel(x[n])
+        stencil = []
+        for (i, j, k) in offs:
+            wijk = w[i, :, 0] * w[j, :, 1] * w[k, :, 2]
+            gi = np.clip(base + [i, j, k], 0, n_grid - 1)
+            stencil.append((wijk, gi, gi * dx - x[n]))
+        C = np.zeros((N, 3, 3))
+        for _ in range(iters):
+            mom = np.zeros((n_grid, n_grid, n_grid, 3))
+            mg = np.zeros((n_grid,) * 3)
+            for wijk, gi, dpos in stencil:
+                val = mass[:, None] * wijk[:, None] * (
+                    vp + np.einsum("pab,pb->pa", C, dpos))
+                np.add.at(mom, (gi[:, 0], gi[:, 1], gi[:, 2]), val)
+                np.add.at(mg, (gi[:, 0], gi[:, 1], gi[:, 2]), mass * wijk)
+            gv = mom / np.maximum(mg, 1e-12)[..., None]
+            C = np.zeros((N, 3, 3))
+            for wijk, gi, dpos in stencil:
+                C += inv_d * wijk[:, None, None] * np.einsum(
+                    "pa,pb->pab", gv[gi[:, 0], gi[:, 1], gi[:, 2]], dpos)
+        out[n] = C
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Return maps, numpy mirrors of NCLaw's preset.py
 # ---------------------------------------------------------------------------
