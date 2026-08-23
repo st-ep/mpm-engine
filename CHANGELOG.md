@@ -4,6 +4,51 @@
 
 ### Added
 
+- `experiments/nclaw/strip_channels.py`: reduced-channel copies of a dump, for
+  running identification under a degradation tier instead of trusting a promise
+  not to read a channel. `no_stress` keeps every stored kinematic channel
+  bitwise (x, v, L, F, volume, mass, volume0) and zeroes the stress, setting
+  `pressure_source` to "absent" so `validate_dump_schema(...).has_pressure` is
+  False and a leg that reads the trace refuses. `positions_only` keeps positions
+  and frame times, derives velocities by central finite differences and both
+  gradients by the moving least squares of `ingest.py` over 24 reference-frame
+  neighbours, and takes reference volume and density as scene facts. Both write
+  per-channel provenance and the derivation notes into the dump metadata.
+- `experiments/nclaw/identify_no_stress.py`: identification with the stress
+  channel excluded, plus the pressure models that replace the stress trace.
+  `hencky_stress_parts` returns Cauchy pressure and deviatoric Cauchy stress
+  from F at a fixed elastic pair, from the relation the engine's
+  `kirchoff_stress_drucker_prager` and NCLaw's `SigmaElasticity` both implement,
+  tau = U diag(2 mu eps_i + lam tr eps) U^T; `column_surface_pressure` is the
+  depth closure on one-cell columns of the evolving cloud;
+  `basal_scaled_pressure` reads a measured pressure only within one grid cell of
+  the floor and scales the depth shape per frame to it, which is what a force
+  plate under the pile would give; `hencky_yield_parts` and
+  `identify_yield_momentum` make the von Mises yield stress the single unknown
+  of a momentum fit on the kinematically flowing set, the estimator that does
+  not use the strain plateau. `stage_identify_no_stress` returns what
+  `suite.stage_identify` returns plus `theta_variants`, one entry per extra
+  estimator, each already in the engine's arguments so it can be rolled out.
+- `experiments/nclaw/compare.py --no-stress` and `--positions-only`: the same
+  cross-engine comparison at a tier. The tier dump is built if absent, the
+  primary recovered parameters and every variant get their own rollout leg per
+  scene, and a positions-only run also seeds the rollout from the tier's own
+  derived frame-0 velocity, so the tier pays for its initial state as well.
+- `experiments/nclaw/no_stress_table.py`: the tier table per material next to
+  the full-channel addendum column and NCLaw's published column, with the
+  recovered parameters, the refusals, the per-channel provenance and the
+  identification wall times.
+- `tests/test_nclaw_no_stress.py`: thirteen tests on the tiers. The no-stress
+  copy is bitwise in every kinematic channel and its elastic leg returns exactly
+  what the full-channel dump returns; the positions-only copy agrees with the
+  ingest's own derivation to float32 on v, L, F, volume and mass, on a dump that
+  travels out to their frame format, is stripped to positions there and comes
+  back; the friction leg refuses on the tier dump and names the missing channel;
+  the tier stage refuses a dump that still carries pressure. The pressure models
+  are checked against an explicit per-particle evaluation of the same Hencky
+  relation, the yield column against the stress of a particle the return map put
+  at yield, the depth closure against a static column, and the basal scaling
+  against a measurement that is a known multiple of the closure.
 - Material 14, `composed`: one elasticity kind and one plasticity kind chosen
   independently per material type, through `set_parameters_dict("elasticity",
   ...)` and `("plasticity", ...)`. Elasticity kinds: `corotated`, `hencky`,
@@ -186,6 +231,15 @@
 
 ### Changed
 
+- `experiments/nclaw/suite.py`: `identify_friction` takes optional `pressure`,
+  `dev_stress` and `pressure_label`, so the pressure the leg needs can come from
+  a stated model instead of the 3D stress trace. Defaults are unchanged and the
+  refusal for a dump with no oracle pressure still fires when no model is given.
+  With a pressure supplied and no deviatoric stress, the yield set is selected on
+  kinematics alone (shearing under positive pressure), the cone-plateau estimator
+  is unavailable, and a solve whose relative residual exceeds the existing 0.15
+  bar refuses instead of falling back to the plateau. The result now always
+  records `friction_angle_solve` and the pressure source.
 - `experiments/` is now campaigns and an archive, nothing flat. Five campaigns
   are kept, each a package with a stages CLI, artifacts under `out/<name>/`, a
   test, and a row in the rewritten `experiments/README.md`, which reads as the
@@ -248,6 +302,48 @@
 
 ### Measured
 
+- The no-stress tier on NCLaw's own trajectories, all four materials, five
+  scenes each, against the full-channel cross-engine run of the same day. Which
+  legs the stress channel was ever needed for: only sand's. Jelly's and
+  plasticine's elastic fits, plasticine's plateau yield reading and water's
+  volumetric fit return the full-channel parameters to every digit on the tier
+  dump, and their ten rollout cells are bitwise the full-channel cells (checked
+  cell by cell for plasticine, where the full-channel results.json survives).
+- Pressure without the stress channel, sand dataset scene, 895393
+  particle-frames, each against the stored stress-trace pressure for diagnosis
+  only:
+
+  | source | median ratio | median relative error | friction fit |
+  | Hencky relation on F at E 1e6, nu 0.2 | 0.99997 | 0.014 percent | plateau 24.9755 deg, solve 37.02 at residual 0.481 |
+  | measured within one cell of the floor, depth shape scaled to it | 0.982 | 1.0 | solve 30.53 deg at residual 0.630, refused |
+  | depth below the per-column free surface | 0.813 | 0.96 | solve 30.72 deg at residual 0.716, refused |
+
+  Their stress channel is a function of their stored F, which is why the tier
+  keeps sand's friction at 0.098 percent error against the full-channel 0.071.
+  The closures land 22 percent high in friction where sand's quadratic budget for
+  keeping the published cell is 4.6 percent, and rolling the refused value out
+  gives 7.3e-4 to 1.0e-3 position MSE against a published 2.6e-5, so the refusal
+  is worth about 6e4 in the cell.
+- Rollout cells at the tier, position MSE against their trajectory: jelly 3.0e-6
+  / 8.8e-6 / 1.8e-6 (dataset, time, velocity mean), plasticine 7.2e-7 / 9.0e-7 /
+  4.0e-7, sand 1.2e-8 / 1.8e-8 / 2.4e-9, water 3.8e-7 / 6.3e-6 / 1.7e-7. All
+  twenty beat NCLaw's published cells, by 52x to 27000x. Identification wall
+  times: jelly 4.0 s, plasticine 7.9 s, sand 6.7 s for three pressure sources,
+  water 1.7 s; a tier dump costs about 3 s per scene.
+- The von Mises yield stress from the momentum fit instead of the strain
+  plateau: 4424 Pa against 5000, 11.5 percent low, at relative residual 0.334,
+  which the 0.15 bar refuses. Rolled out anyway it gives 5.3e-5 on the dataset
+  scene against a published 6.5e-5, so the margin falls from 90x to 1.2x. The
+  plateau reading needs no stress channel, so this is the price of not having
+  the stored elastic F either, not the price of the tier.
+- Positions-only tier on their jelly (positions and frame times measured,
+  velocities by central finite difference, both gradients by moving least squares
+  over 24 reference-frame neighbours): E 101861 against 1e5, 1.86 percent high,
+  nu 0.17497, 12.5 percent low. Cells 1.8e-5 / 2.7e-5 / 4.6e-6 against the
+  published 2.4e-4 / 9.8e-4 / 2.4e-4. The correct-parameter rollout at this tier
+  is 1.8e-5 on the dataset scene, the same number as the recovered rollout,
+  because the run is seeded from a finite-difference frame-0 velocity: what that
+  cell measures is the derived initial state, not the identification.
 - Round trip of the ingestion path on the suite's own cube dumps (126 frames,
   35937 particles each), our dump out to their format and back:
 
