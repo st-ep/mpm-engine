@@ -15,7 +15,7 @@ MATERIAL_NAME_TO_ID = {
     "jelly": 0, "metal": 1, "sand": 2,
     "plasticine": 5, "fluid": 6, "stationary": 7, "rigid": 8,
     "mu_i_sand": 9, "newtonian": 10, "mu_i_phi": 11, "tabulated_viscous": 12,
-    "tabulated_mu_i": 13,
+    "tabulated_mu_i": 13, "tabulated_yield": 15,
     # composed material: one elasticity kind and one plasticity kind, chosen
     # independently per material type (see ELASTICITY_KIND / PLASTICITY_KIND).
     # Exists so NCLaw's constitutive zoo (nclaw/material/preset.py, composed the

@@ -202,6 +202,15 @@ MATERIALS["visc_table"] = {
     "truth": {"E": 1.0e5, "nu": 0.3},
     "theta_names": ["eta_table"],
 }
+MATERIALS["yield_table"] = {
+    # learned perfect plasticity: Hencky elasticity plus a tabulated yield
+    # surface sqrt(J2(dev tau)) <= h(p) on a linear Kirchhoff-pressure grid.
+    # A flat table is von Mises, a line through the origin is the cohesionless
+    # Drucker-Prager cone; the elastic pair comes in through theta per run.
+    "engine": "tabulated_yield", "law": "tabulated_yield", "rho": 1000.0,
+    "truth": {"E": 3.0e5, "nu": 0.25},
+    "theta_names": ["eta_table"],
+}
 
 # Keys the engine consumes verbatim. A recovered curve is DATA (a table plus the
 # grid it is read on), not a named scalar, so it rides through engine_params

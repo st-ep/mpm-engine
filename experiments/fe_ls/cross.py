@@ -146,6 +146,112 @@ def identify_friction_fe_binned(arr: dict, fe, gd_min: float = 1.0,
     return out
 
 
+YIELD_BASIS = suite.ROOT / "fe-weights" / "yield_surface.npz"
+
+
+def identify_yield_surface_fe(arr: dict, gd_min: float = 1.0,
+                              eps_gamma: float = 0.02, n_bins: int = 32,
+                              min_count: int = 100, ridge: float = 1.0e-4,
+                              log=print) -> dict:
+    """The yield surface h(p) as a learned function: sqrt(J2(dev tau)) = h(p).
+
+    One unknown-form family for the whole perfect-plasticity zoo: a von Mises
+    solid returns the flat curve h = sigma_y / sqrt(2), a cohesionless cone
+    returns the line through the origin with slope sqrt(J2)/p, cohesion and
+    caps sit in between. The estimator is the binned pointwise reading in
+    Kirchhoff quantities over the post-impact shearing set, tension states
+    included, because yielding under tension is exactly what separates the
+    flat family from the cones. Fit by ridge least squares on the trained
+    basis, weighted by bin counts; linear in theta throughout.
+    """
+    from common.conventions import (
+        equivalent_shear_rate,
+        pressure_from_cauchy_3d_trace,
+        sym,
+    )
+    from experiments.fe_ls.baseline import load_table_fe
+
+    phi_fn, p_grid, K = load_table_fe(YIELD_BASIS, "p_grid")
+    D = sym(arr["L"])
+    gd = equivalent_shear_rate(D, eps_gamma)
+    J = np.linalg.det(arr["F"])
+    p_k = pressure_from_cauchy_3d_trace(arr["stress"]) * J
+    dev = arr["stress"] - (np.trace(arr["stress"], axis1=2, axis2=3) / 3.0
+                           )[:, :, None, None] * np.eye(3)[None, None]
+    sqrtJ2_k = np.sqrt(0.5 * np.sum(dev * dev, axis=(2, 3))) * J
+
+    ke = 0.5 * np.einsum("p,fpi->f", arr["mass"], arr["v"] ** 2)
+    k_peak = int(np.argmax(ke))
+    decayed = np.flatnonzero(ke <= 0.1 * ke[k_peak])
+    k_start = int(decayed[decayed > k_peak][0]) if np.any(decayed > k_peak) else k_peak
+
+    sel = np.zeros(p_k.shape, bool)
+    sel[k_start:] = True
+    sel &= np.isfinite(p_k) & np.isfinite(sqrtJ2_k) & (gd > gd_min)
+    pp, yy = p_k[sel], sqrtJ2_k[sel]
+    lo, hi = np.percentile(pp, 1), np.percentile(pp, 99)
+    edges = np.linspace(lo, hi, n_bins + 1)
+    idx = np.clip(np.digitize(pp, edges) - 1, 0, n_bins - 1)
+    centers, medians, counts = [], [], []
+    for b in range(n_bins):
+        m = idx == b
+        if int(m.sum()) >= min_count:
+            centers.append(0.5 * (edges[b] + edges[b + 1]))
+            medians.append(float(np.median(yy[m])))
+            counts.append(int(m.sum()))
+    if len(centers) < 4:
+        return {"refused": True,
+                "reason": f"only {len(centers)} populated pressure bins"}
+    pc = np.asarray(centers)
+    outside = float(((pc < p_grid[0]) | (pc > p_grid[-1])).mean())
+    Phi = phi_fn(np.clip(pc, p_grid[0], p_grid[-1]))
+    w = np.sqrt(np.asarray(counts, float))
+    A = Phi * w[:, None]
+    b_vec = np.asarray(medians) * w
+    # curvature anchor: the rollout reads the surface at impact pressures far
+    # above the observed bins, so extrapolation is decided here. Penalizing the
+    # second differences of h over the WHOLE trained grid keeps the curve as
+    # straight as the bins allow; the true families (flat, linear cone) are in
+    # this penalty's null space exactly, so it costs them nothing.
+    Phi_g = phi_fn(p_grid)
+    n_g = len(p_grid)
+    D2 = (np.eye(n_g, k=0) * -2 + np.eye(n_g, k=1) + np.eye(n_g, k=-1))[1:-1]
+    scale = np.linalg.norm(b_vec) / max(np.median(np.abs(medians)), 1e-12)
+    C = scale * (D2 @ Phi_g)
+    theta = np.linalg.solve(A.T @ A + C.T @ C + ridge * np.eye(K), A.T @ b_vec)
+    fit = Phi @ theta
+    resid = float(np.linalg.norm((fit - medians) * w) / np.linalg.norm(b_vec))
+    # the curve on the trained grid, for the bake and for shape diagnostics
+    h_grid = phi_fn(p_grid) @ theta
+    dh = np.gradient(h_grid, p_grid)
+    out = {"refused": False, "theta": theta.tolist(),
+           "fit_residual_rel": resid, "n_bins_used": len(centers),
+           "bin_centers_p_kirchhoff": centers, "bin_medians_sqrtJ2": medians,
+           "bin_counts": counts, "k_start": k_start,
+           "p_fraction_outside_support": outside,
+           "n_readings": int(sel.sum()),
+           "h_at_p0": float(np.interp(0.0, p_grid, h_grid)),
+           "dh_dp_median_on_support": float(np.median(
+               dh[(p_grid >= lo) & (p_grid <= hi)])),
+           "curve": {"p": p_grid.tolist(), "h": h_grid.tolist()},
+           "estimator": ("binned pointwise sqrt(J2) against Kirchhoff "
+                         "pressure on the post-impact shearing set, "
+                         "tension included")}
+    log(f"[fe-cross] yield surface: {len(centers)} bins over p "
+        f"[{lo:.0f}, {hi:.0f}] Pa, h(0) = {out['h_at_p0']:.1f} Pa, "
+        f"median dh/dp = {out['dh_dp_median_on_support']:.4f}, "
+        f"fit resid {resid:.3f}")
+    return out
+
+
+def _yield_surface_theta(result: dict, E: float, nu: float) -> dict:
+    """Engine arguments for the tabulated-yield rollout of a recovered h(p)."""
+    p = np.asarray(result["curve"]["p"], float)
+    h = np.clip(np.asarray(result["curve"]["h"], float), 0.0, None)
+    return {"E": float(E), "nu": float(nu), "eta_table": h.tolist(),
+            "eta_table_smin": float(p[0]), "eta_table_smax": float(p[-1])}
+
+
 def _load(material: str) -> dict:
     dump = CROSS_DUMPS / f"{material}_dataset_truth.npz"
     arr = suite._load_arrays(dump)
@@ -226,6 +332,20 @@ def run_material(material: str, log=print) -> dict:
                          {"eta_table": [mu_true] * b["n_points"],
                           "eta_table_smin": b["smin"],
                           "eta_table_smax": b["smax"]}))
+        t0 = time.time()
+        ys = identify_yield_surface_fe(arr, log=log)
+        ys["wall_seconds"] = time.time() - t0
+        res["identify"]["yield_surface_fe"] = {
+            k: ys.get(k) for k in
+            ("refused", "reason", "fit_residual_rel", "n_bins_used", "h_at_p0",
+             "dh_dp_median_on_support", "wall_seconds", "estimator")}
+        if not ys.get("refused", True):
+            tr_s = suite.MATERIALS["sand"]["truth"]
+            legs.append(("fe_yield_surface", "yield_table",
+                         _yield_surface_theta(ys, tr_s["E"], tr_s["nu"])))
+            res["identify"]["yield_surface_fe"]["elastic_pair"] = (
+                "assumed at the configured values, as the known-form sand row "
+                "does and states")
         t0 = time.time()
         binned = identify_friction_fe_binned(arr, fe, log=log)
         binned["wall_seconds"] = time.time() - t0
@@ -313,6 +433,19 @@ def run_material(material: str, log=print) -> dict:
                          {"E": float(E_h), "nu": float(nu_h),
                           "yield_stress": 1.0e9}))
             res["identify"]["projection"] = {"E": float(E_h), "nu": float(nu_h)}
+            # the full unknown-form law: FE elastic pair plus the learned
+            # yield surface h(p) through the tabulated-yield material
+            t0 = time.time()
+            ys = identify_yield_surface_fe(arr, log=log)
+            ys["wall_seconds"] = time.time() - t0
+            res["identify"]["yield_surface_fe"] = {
+                k: ys.get(k) for k in
+                ("refused", "reason", "fit_residual_rel", "n_bins_used",
+                 "h_at_p0", "dh_dp_median_on_support", "wall_seconds",
+                 "estimator")}
+            if not ys.get("refused", True):
+                legs.append(("fe_yield_surface", "yield_table",
+                             _yield_surface_theta(ys, E_h, nu_h)))
         res["note"] = ("the hyperelastic family recovers the elastic function "
                        "because the stored F is the elastic state; no trained "
                        "plasticity basis is wired into this campaign, so the "

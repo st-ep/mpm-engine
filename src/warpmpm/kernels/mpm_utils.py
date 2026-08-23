@@ -160,6 +160,59 @@ def kirchoff_stress_drucker_prager(
 
 
 @wp.func
+def yield_table_return_mapping(F_trial: wp.mat33, model: MPMModelStruct, p: int, mat: int):
+    """Learned perfect-plasticity return map: sqrt(J2(dev tau)) <= h(p).
+
+    h is tabulated on a LINEAR Kirchhoff-pressure grid in
+    [eta_table_smin, eta_table_smax] Pa (the table storage is reused; a
+    tabulated-yield material never coexists with a tabulated mu(I) or viscous
+    material in one sim). A flat table reproduces von_mises_return_mapping
+    exactly (cap on ||dev eps|| of h sqrt(2) / (2 mu) = sigma_y / (2 mu) when
+    h = sigma_y / sqrt(2)); a line through the origin reproduces the
+    cohesionless Drucker-Prager cone including its tension cutoff, which here
+    is the branch h <= 0 with a positive strain trace.
+    """
+    U = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    V = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    sig_old = wp.vec3(0.0)
+    wp.svd3(F_trial, U, sig_old, V)
+    sig = wp.vec3(
+        wp.max(sig_old[0], 0.01), wp.max(sig_old[1], 0.01), wp.max(sig_old[2], 0.01)
+    )
+    epsilon = wp.vec3(wp.log(sig[0]), wp.log(sig[1]), wp.log(sig[2]))
+    tr = epsilon[0] + epsilon[1] + epsilon[2]
+    mean = tr / 3.0
+    p_kirch = -(2.0 * model.mu[p] / 3.0 + model.lam[p]) * tr
+
+    pmin = model.eta_table_smin
+    pmax = model.eta_table_smax
+    nt = model.eta_table_n
+    x = wp.clamp(p_kirch, pmin, pmax)
+    t = (x - pmin) / (pmax - pmin) * wp.float(nt - 1)
+    i0 = wp.int(wp.floor(t))
+    if i0 > nt - 2:
+        i0 = nt - 2
+    frac = t - wp.float(i0)
+    h = model.eta_table[i0] * (1.0 - frac) + model.eta_table[i0 + 1] * frac
+
+    if h <= 0.0 and tr > 0.0:
+        # cohesionless tension: stress free, exactly the DP cutoff
+        return U * wp.transpose(V)
+    cap = wp.max(h, 0.0) * 0.70710678 / model.mu[p]   # h sqrt(2) / (2 mu)
+    eps_hat = epsilon - wp.vec3(mean, mean, mean)
+    n = wp.length(eps_hat) + 1e-12
+    if n > cap:
+        epsilon = epsilon - ((n - cap) / n) * eps_hat
+        sig_elastic = wp.mat33(
+            wp.exp(epsilon[0]), 0.0, 0.0,
+            0.0, wp.exp(epsilon[1]), 0.0,
+            0.0, 0.0, wp.exp(epsilon[2]),
+        )
+        return U * sig_elastic * wp.transpose(V)
+    return F_trial
+
+
+@wp.func
 def von_mises_return_mapping(F_trial: wp.mat33, model: MPMModelStruct, p: int, mat: int):
     U = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     V = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -1283,6 +1336,10 @@ def stress_update_particle(state: MPMStateStruct, model: MPMModelStruct, dt: flo
             state.particle_F[p] = mu_i_tabulated_return_mapping(
                 state.particle_F_trial[p], model, p, mat, dt
             )
+        elif mat == 15:  # tabulated yield surface h(p) (FE-recovered plasticity)
+            state.particle_F[p] = yield_table_return_mapping(
+                state.particle_F_trial[p], model, p, mat
+            )
         elif mat == 11:  # compressible mu(I)-Phi(I) dilatancy (TrackEUCLID)
             state.particle_F[p] = mu_i_phi_return_mapping(
                 state.particle_F_trial[p], state, model, p, mat, dt
@@ -1315,7 +1372,7 @@ def stress_update_particle(state: MPMStateStruct, model: MPMModelStruct, dt: flo
             stress = kirchoff_stress_FCR(
                 state.particle_F[p], U, V, J, model.mu[p], model.lam[p]
             )
-        if mat == 1:
+        if mat == 1 or mat == 15:
             # coaxial Hencky elasticity, tau = U diag(2 mu eps + lam tr eps) U^T,
             # consistent with the log-space von-Mises return above. The fork's
             # original form multiplied by V^T F^T, which injects an extra
