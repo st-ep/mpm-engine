@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from experiments.nclaw import ingest as ing
 from experiments.nclaw import identify_no_stress as ns
+from experiments.nclaw import ingest as ing
 from experiments.nclaw import strip_channels as sc
 from experiments.nclaw import suite
 
