@@ -68,6 +68,84 @@ PUBLISHED = {"jelly": {"dataset": 2.4e-4, "time": 9.8e-4, "vel_0001": 2.4e-4,
                        "vel_0007": 1.9e-5, "vel_0008": 1.9e-5}}
 
 
+def identify_friction_fe_binned(arr: dict, fe, gd_min: float = 1.0,
+                                eps_gamma: float = 0.02, n_bins: int = 32,
+                                min_count: int = 100, ridge: float = 1.0e-4,
+                                log=print) -> dict:
+    """mu(I) as a curve-valued plateau: binned pointwise cone readings.
+
+    The momentum-row FE fit inherits the impact-phase bias that pushed the
+    known-form momentum solve to 38.9 degrees on their sand; the known-form
+    path escaped through the cone plateau, the mode of the pointwise reading
+    r = sqrt(J2(dev sigma)) / p over the shearing set. This is that estimator
+    made curve-valued: bin r against the inertial number over the post-impact
+    frames, take the median per bin (the median is what rejects sub-yield
+    contamination), and fit the basis coefficients to the binned medians by
+    ridge least squares weighted by bin counts. Reads the stress channel, the
+    same information the known-form plateau reads.
+    """
+    from common.conventions import (
+        equivalent_shear_rate,
+        inertial_number,
+        pressure_from_cauchy_3d_trace,
+        sym,
+    )
+    d_grain = float(arr["meta"].grain_diameter)
+    rho_s = float(arr["meta"].rho_s)
+    D = sym(arr["L"])
+    gd = equivalent_shear_rate(D, eps_gamma)
+    p = pressure_from_cauchy_3d_trace(arr["stress"])
+    dev = arr["stress"] - (np.trace(arr["stress"], axis1=2, axis2=3) / 3.0
+                           )[:, :, None, None] * np.eye(3)[None, None]
+    r = np.sqrt(0.5 * np.sum(dev * dev, axis=(2, 3))) / np.where(p > 0, p, np.nan)
+
+    ke = 0.5 * np.einsum("p,fpi->f", arr["mass"], arr["v"] ** 2)
+    k_peak = int(np.argmax(ke))
+    decayed = np.flatnonzero(ke <= 0.1 * ke[k_peak])
+    k_start = int(decayed[decayed > k_peak][0]) if np.any(decayed > k_peak) else k_peak
+
+    sel = np.zeros(p.shape, bool)
+    sel[k_start:] = True
+    sel &= np.isfinite(r) & (gd > gd_min) & (p > 0)
+    sel_r, sel_gd, sel_p = r[sel], gd[sel], p[sel]
+    floor = np.nanpercentile(sel_p, 25)
+    keep = sel_p > floor
+    I = inertial_number(sel_gd[keep], sel_p[keep], d_grain, rho_s)  # noqa: E741
+    rr = sel_r[keep]
+    s = np.log10(np.clip(I, 1e-12, None))
+    edges = np.linspace(np.percentile(s, 1), np.percentile(s, 99), n_bins + 1)
+    idx = np.clip(np.digitize(s, edges) - 1, 0, n_bins - 1)
+    centers, medians, counts = [], [], []
+    for b in range(n_bins):
+        m = idx == b
+        if int(m.sum()) >= min_count:
+            centers.append(0.5 * (edges[b] + edges[b + 1]))
+            medians.append(float(np.median(rr[m])))
+            counts.append(int(m.sum()))
+    if len(centers) < 4:
+        return {"refused": True,
+                "reason": f"only {len(centers)} populated I bins, fewer than 4"}
+    Ic = 10.0 ** np.asarray(centers)
+    Phi = fe.phi(Ic)
+    w = np.sqrt(np.asarray(counts, float))
+    A = Phi * w[:, None]
+    b_vec = np.asarray(medians) * w
+    theta = np.linalg.solve(A.T @ A + ridge * np.eye(Phi.shape[1]), A.T @ b_vec)
+    fit = Phi @ theta
+    resid = float(np.linalg.norm((fit - medians) * w) / np.linalg.norm(b_vec))
+    baked = bake_mu_table(fe, theta)
+    out = {"refused": False, "theta": theta.tolist(), "baked_table": baked,
+           "n_bins_used": len(centers), "bin_centers_log10I": centers,
+           "bin_medians": medians, "bin_counts": counts,
+           "fit_residual_rel": resid, "k_start": k_start,
+           "n_readings": int(keep.sum()),
+           "estimator": "binned pointwise cone readings, median per I bin"}
+    log(f"[fe-cross] binned-cone curve: {len(centers)} bins, "
+        f"median r span {min(medians):.4f}..{max(medians):.4f} "
+        f"(truth cone 0.5680), fit resid {resid:.3f}")
+    return out
+
+
 def _load(material: str) -> dict:
     dump = CROSS_DUMPS / f"{material}_dataset_truth.npz"
     arr = suite._load_arrays(dump)
@@ -148,6 +226,18 @@ def run_material(material: str, log=print) -> dict:
                          {"eta_table": [mu_true] * b["n_points"],
                           "eta_table_smin": b["smin"],
                           "eta_table_smax": b["smax"]}))
+        t0 = time.time()
+        binned = identify_friction_fe_binned(arr, fe, log=log)
+        binned["wall_seconds"] = time.time() - t0
+        res["identify"]["granular_fe_binned_cone"] = {
+            k: binned.get(k) for k in
+            ("refused", "reason", "n_bins_used", "fit_residual_rel",
+             "bin_medians", "wall_seconds", "estimator")}
+        if not binned.get("refused", True):
+            bb = binned["baked_table"]
+            legs.append(("fe_binned_cone", "sand_table",
+                         {"eta_table": bb["table"], "eta_table_smin": bb["smin"],
+                          "eta_table_smax": bb["smax"]}))
         res["identify"]["granular_fe_full"] = {
             k: v for k, v in ident.items() if k not in ("curve",)}
 
@@ -210,9 +300,23 @@ def run_material(material: str, log=print) -> dict:
         res["identify"]["hyperelastic_fe"]["accepted"] = (
             not hyper.get("refused", True)
             and float(hyper.get("residual_rel", 1.0)) <= RESIDUAL_BAR)
-        res["note"] = ("no trained plasticity basis is wired into this "
-                       "campaign; the family refusals above are the result "
-                       "for this material")
+        if res["identify"]["hyperelastic_fe"]["accepted"]:
+            # the stored F is the elastic state, so the hyperelastic family
+            # fits it cleanly at every frame; what no shipped basis covers is
+            # the yield. Rolling the recovered elastic function WITHOUT a
+            # yield cap prices exactly that gap, and the leg name says so.
+            from ident.weakform.elastic_grid import moduli_to_E_nu
+            mu_h = float(hyper["shear_modulus_from_curve"])
+            lam_h = float(hyper["bulk_coefficient"]) - 2.0 * mu_h / 3.0
+            E_h, nu_h = moduli_to_E_nu(mu_h, lam_h)
+            legs.append(("fe_elastic_only_no_yield", "plasticine",
+                         {"E": float(E_h), "nu": float(nu_h),
+                          "yield_stress": 1.0e9}))
+            res["identify"]["projection"] = {"E": float(E_h), "nu": float(nu_h)}
+        res["note"] = ("the hyperelastic family recovers the elastic function "
+                       "because the stored F is the elastic state; no trained "
+                       "plasticity basis is wired into this campaign, so the "
+                       "elastic-only rollout leg prices the missing yield")
 
     res["legs_rolled"] = [leg for leg, _, _ in legs]
     if legs:
