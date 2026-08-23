@@ -5,15 +5,15 @@ The input is ``out/shear_cell_3d/rollout_3d.npz`` from ``shear_cell_3d.py``.
 traces. The displacement-controlled shapes remain similar while the forces separate.
 ``shear_3d_view.mp4`` is a rotating view of the 3D reference block.
 
-Run: ``python experiments/shear_rollout_video.py``
+Run: ``.venv/bin/python -m experiments.archive.shear_rollout_video``
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 
-OUT = Path(__file__).resolve().parents[1] / "out" / "shear_cell_3d"
+from experiments.robotics.common import engine_out
+
+OUT = engine_out("shear_cell_3d")
 
 
 def _load():

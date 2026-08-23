@@ -14,23 +14,23 @@ The comparison separates measurement/method limits (weak, force-based) from mode
 the flexible FE basis is near-exact in the strong form and rides ~1.4x high in the weak form
 (the closure factor), while the misspecified Bingham fit fails in both (it cannot represent the
 shear-thinning shape regardless of the data form). Run:
-  python experiments/strong_vs_weak.py
+  .venv/bin/python -m experiments.archive.strong_vs_weak
 """
 from __future__ import annotations
 
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
-import shear_cell_3d as M3
-import shear_cell_fe as M2
+from experiments.robotics.common import ENGINE_ROOT, add_repo_to_path, engine_out
 
-REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO))
-OUT = Path(__file__).resolve().parents[1] / "out" / "strong_vs_weak"
+sys.path.insert(0, str(ENGINE_ROOT / "examples"))
+import shear_cell_fe as M2
+from experiments.archive import shear_cell_3d as M3
+
+REPO = add_repo_to_path()
+OUT = engine_out("strong_vs_weak")
 SPEEDS = (0.006, 0.012, 0.025, 0.05, 0.1, 0.2, 0.4, 0.8)
 FDT = 2.0e-3
 

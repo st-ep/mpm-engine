@@ -5,40 +5,30 @@ Reuses the arm-driven squeeze frames already rendered by rollout_franka_cotracke
 law. The output video places the two renders side by side above a force-versus-strain
 trace with a current-frame marker. The script also writes a static force plot.
 
-Run: ``python experiments/rollout_force_video.py``
+Run: ``.venv/bin/python -m experiments.archive.rollout_force_video``
 """
 from __future__ import annotations
 
 import argparse
 import subprocess
-from pathlib import Path
 
 import numpy as np
 
-from warpmpm import GridConfig, Solver, block, newtonian
-from warpmpm.coupling.backend import WarpMPMBackend
+from experiments.robotics.common import engine_out, press_scene
 
-OUT = Path(__file__).resolve().parents[1] / "out" / "rollout_arm"
+OUT = engine_out("rollout_arm")
 LAWS = {"truth": (200.0, 40.0), "learned": (192.0, 55.0)}
 
 
 def force_series(tau_y, eta, geom, n_grid=52, v_plate=0.08, press_strain=0.5,
                  dt=1.0e-4, substeps=20, frame_stride=3, device="auto"):
     """Re-run the squeeze; record (strain%, grid-impulse |Fz|) at the rendered frames."""
-    grid = GridConfig(n_grid=n_grid, grid_lim=0.4)
-    cw, cd, ch = geom
-    pos, vol, floor = block(grid, size=geom, ppc=2)
-    s = Solver(grid=grid, device=device).load_particles(pos, vol)
-    s.set_material(newtonian(eta=eta, density=1000.0, bulk_modulus=9.0e5).with_yield(tau_y))
-    s.add_plane((0, 0, floor), (0, 0, 1), "sticky")
-    cx = cy = grid.grid_lim * 0.5
-    dough_top = floor + ch
-    bh = (0.5 * cw + 0.015, 0.5 * cd + 0.015, 0.6 * grid.dx)
-    be = WarpMPMBackend(solver=s)
-    z = dough_top + bh[2]
-    tool = be.attach_tool((cx, cy, z), bh)
-    fdt = dt * substeps
-    nf = round(press_strain * ch / v_plate / fdt)
+    sc = press_scene(tau_y, eta, geom, n_grid=n_grid, dt=dt, substeps=substeps,
+                     v_plate=v_plate, press_strain=press_strain, device=device)
+    be, tool = sc["be"], sc["tool"]
+    cx, cy, bh = sc["cx"], sc["cy"], sc["bh"]
+    ch, dough_top, fdt, nf = sc["ch"], sc["dough_top"], sc["fdt"], sc["nf"]
+    z = sc["z0"]
     prev = z
     strain, Fz = [], []
     for f in range(nf + 1):

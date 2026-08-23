@@ -15,24 +15,21 @@ follows corresponding material points; we compare world-space tracks point-to-po
 NOTE: the plate descent is displacement-controlled, so vertical compression is prescribed;
 the rheology-dependent signal is the lateral extrusion. This quantifies how well deformation
 (vs the force) validates the learned law. Run:
-  python experiments/predict_volume_rollout.py
+  .venv/bin/python -m experiments.robotics.predict_volume_rollout
 """
 from __future__ import annotations
 
 import argparse
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 import numpy as np
 
-from warpmpm import GridConfig, Solver, block, newtonian
-from warpmpm.coupling.backend import WarpMPMBackend
+from experiments.robotics.common import add_repo_to_path, engine_out, press_scene
 
-REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO))                       # to import the perception pipeline
-OUT = Path(__file__).resolve().parents[1] / "out" / "rollout"
+REPO = add_repo_to_path()                       # to import the perception pipeline
+OUT = engine_out("rollout")
 
 LAWS = {
     "truth":   (200.0, 40.0),
@@ -44,20 +41,11 @@ LAWS = {
 def squeeze_dump(tau_y, eta, geom, n_grid=52, v_plate=0.08, press_strain=0.5,
                  dt=1.0e-4, substeps=20, frame_stride=2, device="auto"):
     """Forward squeeze of a `geom` dough blob; return (X[F,N,3], times) of dough particles."""
-    grid = GridConfig(n_grid=n_grid, grid_lim=0.4)
-    cw, cd, ch = geom
-    pos, vol, floor = block(grid, size=geom, ppc=2)
-    s = Solver(grid=grid, device=device).load_particles(pos, vol)
-    s.set_material(newtonian(eta=eta, density=1000.0, bulk_modulus=9.0e5).with_yield(tau_y))
-    s.add_plane((0, 0, floor), (0, 0, 1), "sticky")
-    cx = cy = grid.grid_lim * 0.5
-    dough_top = floor + ch
-    bh = (0.5 * cw + 0.015, 0.5 * cd + 0.015, 0.6 * grid.dx)
-    be = WarpMPMBackend(solver=s)
-    z = dough_top + bh[2]
-    tool = be.attach_tool((cx, cy, z), bh)
-    fdt = dt * substeps
-    nf = round(press_strain * ch / v_plate / fdt)
+    sc = press_scene(tau_y, eta, geom, n_grid=n_grid, dt=dt, substeps=substeps,
+                     v_plate=v_plate, press_strain=press_strain, device=device)
+    s, be, tool = sc["s"], sc["be"], sc["tool"]
+    cx, cy, fdt, nf = sc["cx"], sc["cy"], sc["fdt"], sc["nf"]
+    z = sc["z0"]
     prev = z
     X, T = [], []
     for f in range(nf + 1):

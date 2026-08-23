@@ -3,22 +3,20 @@
 These are the gray-speckle particle videos (front orthographic, per-particle brightness =
 material-locked texture), as opposed to the marching-cubes surface render. Re-runs the same
 quasi-2D plane-strain squeeze as the real-data datasets and uses the perception speckle
-renderer. Run:  python experiments/speckle_particle_videos.py
+renderer. Run:  .venv/bin/python -m experiments.archive.speckle_particle_videos
 """
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 
 import numpy as np
 
+from experiments.robotics.common import add_repo_to_path, engine_out
 from warpmpm import GridConfig, Solver, newtonian
 from warpmpm.coupling.backend import WarpMPMBackend
 
-REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO))
-OUT = Path(__file__).resolve().parents[1] / "out" / "speckle_particles"
+REPO = add_repo_to_path()
+OUT = engine_out("speckle_particles")
 
 
 def dump_slab(scale, n_grid=64, v_plate=0.08, press_strain=0.5, dt=1.0e-4,

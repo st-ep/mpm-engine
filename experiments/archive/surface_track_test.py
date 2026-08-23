@@ -8,7 +8,7 @@ of its nearest material particle.
 The script renders the same squeeze both ways and compares CoTracker3 visibility,
 confidence, and the number of points that remain tracked.
 
-Run: ``python experiments/surface_track_test.py``
+Run: ``.venv/bin/python -m experiments.archive.surface_track_test``
 """
 from __future__ import annotations
 
@@ -20,15 +20,21 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial import cKDTree
 
+from experiments.robotics.common import (
+    ENGINE_ROOT,
+    add_repo_to_path,
+    cotrack,
+    engine_out,
+    nonwhite_pixels,
+)
 from warpmpm import GridConfig, Solver, block, newtonian
 from warpmpm.coupling.backend import WarpMPMBackend
 
-REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
+REPO = add_repo_to_path()
+sys.path.insert(0, str(ENGINE_ROOT / "examples"))
 from dough_surface_render import _surface
 
-OUT = Path(__file__).resolve().parents[1] / "out" / "surface_track"
+OUT = engine_out("surface_track")
 LIGHT = np.array([0.35, 0.55, 0.78]); LIGHT = LIGHT / np.linalg.norm(LIGHT)
 DOUGH = np.array([0.93, 0.80, 0.55])
 
@@ -63,26 +69,6 @@ def _render_seq(stem, textured, speckle, frames_x, floor, ch, cx, cy):
     return fdir
 
 
-def _cotrack(fdir, spacing=10, device="cpu"):
-    import torch
-    from PIL import Image
-    files = sorted(Path(fdir).glob("f_*.png"))
-    imgs = np.stack([np.asarray(Image.open(f).convert("RGB").resize((460, 400)))
-                     for f in files]).astype(np.float32)
-    video = torch.from_numpy(imgs).permute(0, 3, 1, 2)[None]
-    f0 = imgs[0]; H, W = f0.shape[:2]
-    ys = np.arange(spacing, H - spacing, spacing); xs = np.arange(spacing, W - spacing, spacing)
-    GX, GY = np.meshgrid(xs, ys); pts = np.stack([GX.ravel(), GY.ravel()], -1).astype(np.float32)
-    val = f0[pts[:, 1].astype(int), pts[:, 0].astype(int)].sum(1)
-    pts = pts[val < 720]                                     # on the dough (not white bg)
-    q = np.concatenate([np.zeros((len(pts), 1), np.float32), pts], 1)
-    model = torch.hub.load("facebookresearch/co-tracker", "cotracker3_offline").to(device)
-    model.eval()
-    with torch.no_grad():
-        tr, vis = model(video.to(device), queries=torch.from_numpy(q)[None].to(device))
-    return tr[0].cpu().numpy(), vis[0].cpu().numpy()
-
-
 def run(geom=(0.16, 0.16, 0.06), n_grid=52, nframes=22, device="auto"):
     OUT.mkdir(parents=True, exist_ok=True)
     grid = GridConfig(n_grid=n_grid, grid_lim=0.4)
@@ -109,7 +95,8 @@ def run(geom=(0.16, 0.16, 0.06), n_grid=52, nframes=22, device="auto"):
     res = {}
     for stem, tex in (("smooth", False), ("textured", True)):
         fdir = _render_seq(stem, tex, speckle, frames_x, floor, ch, cx, cy)
-        tr, vis = _cotrack(fdir)
+        tr, vis = cotrack(fdir, spacing=10, select=nonwhite_pixels,
+                          resize=(460, 400))
         # tracking-quality proxies: mean CoTracker confidence + fraction kept confident to end
         meanvis = float(vis.mean())
         kept = float((vis[-1] > 0.8).mean())

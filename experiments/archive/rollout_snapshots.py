@@ -5,13 +5,13 @@ deformation, is the discriminator (FE 11%, HB-ridge 25%, Bingham 34% on the wall
 
 Uses the cached truth/FE/Bingham trajectories (out/shear_cell_3d/rollout_3d.npz) and re-sims
 the HB-ridge law (recovered in correct_model_check.py). Run:
-  python experiments/rollout_snapshots.py
+  .venv/bin/python -m experiments.archive.rollout_snapshots
 """
 from __future__ import annotations
 
 import numpy as np
 
-import shear_cell_3d as S
+from experiments.archive import shear_cell_3d as S
 from warpmpm import newtonian
 
 OUT = S.OUT

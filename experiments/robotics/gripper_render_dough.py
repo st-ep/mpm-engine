@@ -5,20 +5,21 @@ the target dough (left) and the achieved dough + gripper (right).
 
 Run:
   python examples/gripper_shape.py plan --device cuda:0
-  python experiments/gripper_render_dough.py plan --device cuda:0
+  .venv/bin/python -m experiments.robotics.gripper_render_dough plan --device cuda:0
 """
 from __future__ import annotations
 
 import argparse
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `examples` importable when run as a script
-from examples.gripper_shape import GripperShapeScene, ID_LAW, TRUE, OUT
+from experiments.robotics.common import add_engine_to_path
+
+add_engine_to_path()  # make `examples` importable when run as a script
+from examples.gripper_shape import ID_LAW, OUT, TRUE, GripperShapeScene
 
 
 def _poly(pts, h, sigma=1.3, iso_frac=0.30):

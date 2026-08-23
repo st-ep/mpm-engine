@@ -11,22 +11,23 @@ Protocol:
   3. Plan the press on B through the A-identified law and through the B-true law (oracle); execute
      both in the B-true engine. Transfer is successful if the A-law plan reaches ~the oracle Chamfer.
 
-Run:  python experiments/transfer_identify_plan.py
+Run:  .venv/bin/python -m experiments.robotics.transfer_identify_plan
 """
 from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 
 import numpy as np
 
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `examples` importable when run as a script
-from examples.vonmises_identify import probe, identify
-from experiments.shape_planning import PlateShapeScene, cem_plan, chamfer
+from experiments.robotics.common import add_engine_to_path, engine_out
 
-OUT = Path(__file__).resolve().parents[1] / "out" / "transfer_identify_plan"
+add_engine_to_path()  # make `examples` importable when run as a script
+from examples.vonmises_identify import identify, probe
+
+from experiments.robotics.shape_planning import PlateShapeScene, cem_plan, chamfer
+
+OUT = engine_out("transfer_identify_plan")
 NU = 0.30
 TRUE = dict(E=5e5, nu=NU, yield_stress=3000.0)
 

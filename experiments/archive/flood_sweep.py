@@ -9,21 +9,21 @@ The truck is model scale (1.45 m); read results at full size via Froude scaling
 (see the examples/flood_vehicle.py header): depths and displacements x lam,
 velocities x sqrt(lam), masses x lam^3, with lam = L_real / 1.45.
 
-Run:  python experiments/flood_sweep.py [--frames 60] [--vehicle PATH] [--up z]
+Run:  .venv/bin/python -m experiments.archive.flood_sweep [--frames 60] [--vehicle PATH] [--up z]
 
 Outputs (out/flood_sweep/): one CSV per case and sweep.png.
 """
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import numpy as np
 
+from experiments.robotics.common import REPO_ROOT, engine_out
 from warpmpm.vehicle import FloodScene, load_vehicle
 
-OUT = Path(__file__).resolve().parents[1] / "out" / "flood_sweep"
-DEFAULT_PLY = Path(__file__).resolve().parents[2] / "truck_trimmed.ply"
+OUT = engine_out("flood_sweep")
+DEFAULT_PLY = REPO_ROOT / "truck_trimmed.ply"
 
 CASES = [  # (depth m, velocity m/s)
     (0.08, 1.0),

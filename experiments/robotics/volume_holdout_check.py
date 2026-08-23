@@ -7,13 +7,13 @@ recovered law (identified on 1x, identified on 1.5x) re-simulated at both volume
 reproduces the self-rollout, and the off-diagonal measures transfer between volumes. The
 re-simulation uses the warp-mpm kernel without CoTracker.
 
-Run:  python experiments/volume_holdout_check.py
+Run:  .venv/bin/python -m experiments.robotics.volume_holdout_check
 """
 from __future__ import annotations
 
 import numpy as np
 
-import realdata_pipeline as R
+from experiments.robotics import realdata_pipeline as R
 
 LAWS = {"1x": (276.7, 16.1), "1.5x": (101.6, 59.7)}   # recovered (tau_y, eta) from identify.json
 SCALES = {"1x": 1.0, "1.5x": 1.5}

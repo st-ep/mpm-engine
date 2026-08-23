@@ -17,8 +17,8 @@ the same divergence-free test fields used in A. A total plate force is enough fo
 but not enough for arbitrary tensor weak-form rows.
 
 Run:
-  python experiments/pressure_covariance_sweep.py --device cuda:0
-  python experiments/pressure_covariance_sweep.py --device cuda:0 --seed 0  # quick single-seed run
+  .venv/bin/python -m experiments.archive.pressure_covariance_sweep --device cuda:0
+  .venv/bin/python -m experiments.archive.pressure_covariance_sweep --device cuda:0 --seed 0  # quick single-seed run
 """
 from __future__ import annotations
 
@@ -29,10 +29,11 @@ from pathlib import Path
 
 import numpy as np
 
+from experiments.robotics.common import engine_out
 from warpmpm import GridConfig, Solver, block, newtonian
 from warpmpm.coupling.backend import WarpMPMBackend
 
-OUT = Path(__file__).resolve().parents[1] / "out" / "pressure_covariance_sweep"
+OUT = engine_out("pressure_covariance_sweep")
 G_MAG = 9.81
 EPS_GAMMA = 0.05
 

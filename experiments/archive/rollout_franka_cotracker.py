@@ -8,52 +8,24 @@ CoTracker3 on the dough to extract the material deformation, then compare the pr
 rollout (learned law) to the truth rollout. The error is normalized by how far the material
 actually moves: "the predicted deformation differs from truth by X% of the observed motion."
 Arm motion is identical for both laws (displacement control), so the difference isolates the
-dough. Run:  python experiments/rollout_franka_cotracker.py
+dough. Run:  .venv/bin/python -m experiments.archive.rollout_franka_cotracker
 """
 from __future__ import annotations
 
 import argparse
 import subprocess
-import sys
 from pathlib import Path
 
 import numpy as np
 
+from experiments.robotics.common import add_repo_to_path, cotrack, engine_out, warm_dough_pixels
 from warpmpm import GridConfig, Solver, block, newtonian
 from warpmpm.adapters.mujoco_adapter import FrankaArm
 from warpmpm.coupling.backend import WarpMPMBackend
 
-REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO))
-OUT = Path(__file__).resolve().parents[1] / "out" / "rollout_arm"
+REPO = add_repo_to_path()
+OUT = engine_out("rollout_arm")
 LAWS = {"truth": (200.0, 40.0), "learned": (192.0, 55.0)}
-
-
-def _cotrack(frames_dir, spacing=7, device="cpu"):
-    """Run CoTracker3 on a frame folder; query only DOUGH (warm/red-dominant) pixels. Returns
-    pixel tracks (T,N,2), visibility (T,N)."""
-    import torch
-    from PIL import Image
-    files = sorted(Path(frames_dir).glob("f_*.png"))
-    imgs = np.stack([np.asarray(Image.open(f).convert("RGB")) for f in files]).astype(np.float32)
-    video = torch.from_numpy(imgs).permute(0, 3, 1, 2)[None]        # (1,T,3,H,W)
-    f0 = imgs[0]
-    H, W = f0.shape[:2]
-    ys = np.arange(spacing, H - spacing, spacing)
-    xs = np.arange(spacing, W - spacing, spacing)
-    GX, GY = np.meshgrid(xs, ys)
-    pts = np.stack([GX.ravel(), GY.ravel()], -1).astype(np.float32)
-    r = f0[pts[:, 1].astype(int), pts[:, 0].astype(int), 0]
-    g = f0[pts[:, 1].astype(int), pts[:, 0].astype(int), 1]
-    b = f0[pts[:, 1].astype(int), pts[:, 0].astype(int), 2]
-    dough = (r > b + 12) & (g > b + 4) & (r > 70)                   # warm (low blue) = pizza dough
-    pts = pts[dough]
-    q = np.concatenate([np.zeros((len(pts), 1), np.float32), pts], 1)
-    model = torch.hub.load("facebookresearch/co-tracker", "cotracker3_offline").to(device)
-    model.eval()
-    with torch.no_grad():
-        tr_, vis = model(video.to(device), queries=torch.from_numpy(q)[None].to(device))
-    return tr_[0].cpu().numpy(), vis[0].cpu().numpy()
 
 
 def squeeze_composite(arm, ee, tau_y, eta, geom, stem, n_grid=52, v_plate=0.08,
@@ -147,7 +119,7 @@ def run(geom=(0.16, 0.16, 0.06), n_grid=52, width=720, height=520, device="auto"
     for name, (ty, eta) in LAWS.items():
         fdirs[name] = squeeze_composite(arm, ee, ty, eta, geom, name, n_grid=n_grid,
                                         device=device)
-        tr, vis = _cotrack(fdirs[name])
+        tr, vis = cotrack(fdirs[name], spacing=7, select=warm_dough_pixels)
         tracks[name] = (tr, vis)
         print(f"  {name:8s}: CoTracker tracked {tr.shape[1]} dough pts over {tr.shape[0]} frames")
 

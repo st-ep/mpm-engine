@@ -12,7 +12,7 @@ arm is posed by inverting its EE kinematics so the gripper tracks the prong clus
 shared metric frame), and the composite view is rendered with render_with_particles
 (arm + the three prong boxes + dough particles).
 
-Run:  python experiments/dough_franka_threeprong.py
+Run:  .venv/bin/python -m experiments.robotics.dough_franka_threeprong
 """
 from __future__ import annotations
 
@@ -23,35 +23,14 @@ from pathlib import Path
 
 import numpy as np
 
+from experiments.robotics.common import engine_out, lobedness
 from warpmpm import GridConfig, Solver, block
 from warpmpm.coupling.backend import WarpMPMBackend
 from warpmpm.materials import vonmises
 
-OUT = Path(__file__).resolve().parents[1] / "out" / "three_prong"
+OUT = engine_out("three_prong")
 ID_LAW = dict(E=7.70e5, nu=0.30, yield_stress=3045.3)     # identified from the press probe
 ANGLES = np.deg2rad([90.0, 210.0, 330.0])                 # three prongs, 120 deg apart
-
-
-def lobedness(x0, xf, cx, cy):
-    """Strength of the period-120-degree (3-fold) boundary mode, before vs after."""
-    def profile(x):
-        dx, dy = x[:, 0] - cx, x[:, 1] - cy
-        ang = np.arctan2(dy, dx)
-        rad = np.sqrt(dx * dx + dy * dy)
-        bins = np.linspace(-np.pi, np.pi, 49)
-        idx = np.clip(np.digitize(ang, bins) - 1, 0, len(bins) - 2)
-        rmax = np.array([rad[idx == b].max() if np.any(idx == b) else np.nan
-                         for b in range(len(bins) - 1)])
-        return bins[:-1] + np.diff(bins) / 2, rmax
-    rbar = np.nanmean(profile(x0)[1]) + 1e-9
-
-    def mode3(x):
-        th, r = profile(x)
-        ok = np.isfinite(r)
-        r = r[ok] - np.nanmean(r)
-        t = th[ok]
-        return float(np.abs(np.sum(r * np.exp(-3j * t))) / max(ok.sum(), 1) / rbar)
-    return mode3(x0), mode3(xf)
 
 
 class FrankaThreeProng:

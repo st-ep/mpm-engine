@@ -10,8 +10,8 @@ identified MPM. The identified MPM uses one force probe, while the GNS uses K tr
 rollouts. The transfer test compares a size-independent material law with a GNS trained
 for one object size. Torch remains isolated from ``ident/``.
 
-Run:  python -m examples.gns_baseline gen      # generate warp rollout data
-      python -m examples.gns_baseline train    # train + 1-step/rollout accuracy vs K
+Run:  .venv/bin/python -m experiments.robotics.gns_baseline gen      # generate warp rollout data
+      .venv/bin/python -m experiments.robotics.gns_baseline train    # train + 1-step/rollout accuracy vs K
 """
 from __future__ import annotations
 
@@ -23,11 +23,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from experiments.robotics.common import engine_out
 from warpmpm import GridConfig, Solver
 from warpmpm.materials import vonmises
 from warpmpm.scenes import block
 
-OUT = Path(__file__).resolve().parents[1] / "out" / "gns_baseline"
+OUT = engine_out("gns_baseline")
 DEV = "cpu"
 M = 512            # subsampled particles for the GNS (CPU-tractable)
 H = 3              # position-history length (velocity features)

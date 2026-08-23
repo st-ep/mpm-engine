@@ -8,20 +8,20 @@ cross-section. The forward model is our warp von-Mises engine with the law ident
 from one press probe. A cleaner version would use an oriented capsule or sphere SDF
 fingertip; that is a small engine addition noted for later.
 
-Run:  python -m examples.three_prong
+Run:  .venv/bin/python -m experiments.robotics.three_prong
 """
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import numpy as np
 
+from experiments.robotics.common import engine_out, lobedness
 from warpmpm import GridConfig, Solver
 from warpmpm.materials import vonmises
 from warpmpm.scenes import block
 
-OUT = Path(__file__).resolve().parents[1] / "out" / "three_prong"
+OUT = engine_out("three_prong")
 ID_LAW = dict(E=7.70e5, nu=0.30, yield_stress=3045.3)     # identified from the press probe
 ANGLES = np.deg2rad([90.0, 210.0, 330.0])                 # three prongs, 120 deg apart
 
@@ -78,26 +78,6 @@ class ThreeProngScene:
                 frames.append(dict(x=s.x().copy(), boxes=[], label="release / settle"))
         frames.append(dict(x=s.x().copy(), boxes=[], label="final"))
         return s.x(), frames
-
-
-def lobedness(x0, xf, cx, cy):
-    """Crude 3-fold metric: variance of the angular radius profile, before vs after.
-
-    Project to the x-y plane, bin the boundary radius by angle, and report the strength
-    of the 3-cycle (a triangular/3-lobed section has a strong period-120-deg component)."""
-    def profile(x):
-        dx, dy = x[:, 0] - cx, x[:, 1] - cy
-        ang = np.arctan2(dy, dx); rad = np.sqrt(dx * dx + dy * dy)
-        bins = np.linspace(-np.pi, np.pi, 49)
-        idx = np.clip(np.digitize(ang, bins) - 1, 0, len(bins) - 2)
-        rmax = np.array([rad[idx == b].max() if np.any(idx == b) else np.nan for b in range(len(bins) - 1)])
-        return bins[:-1] + np.diff(bins) / 2, rmax
-    th, r0 = profile(x0); _, rf = profile(xf)
-    # amplitude of the 3-per-revolution Fourier mode, normalized by the mean radius
-    def mode3(th, r):
-        ok = np.isfinite(r); r = r[ok] - np.nanmean(r); t = th[ok]
-        return float(np.abs(np.sum(r * np.exp(-3j * t))) / max(np.sum(ok), 1) / (np.nanmean(profile(x0)[1]) + 1e-9))
-    return mode3(th, r0), mode3(th, rf)
 
 
 def main(device="auto"):

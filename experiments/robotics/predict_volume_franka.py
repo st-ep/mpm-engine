@@ -11,19 +11,17 @@ The comparison uses the collider's accumulated grid-impulse force. The
 stress-integral-derived law is expected to over-predict because that estimator biased the
 identified parameters.
 
-Run: ``python experiments/predict_volume_franka.py``
+Run: ``.venv/bin/python -m experiments.robotics.predict_volume_franka``
 """
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import numpy as np
 
-from warpmpm import GridConfig, Solver, block, newtonian
-from warpmpm.coupling.backend import WarpMPMBackend
+from experiments.robotics.common import engine_out, press_scene
 
-OUT = Path(__file__).resolve().parents[1] / "out"
+OUT = engine_out()
 
 # laws to compare on the unseen volume (identified on a 0.12 x 0.12 x 0.07 blob)
 LAWS = {
@@ -37,20 +35,13 @@ def press_force(tau_y, eta, geom, n_grid=56, v_plate=0.08, press_strain=0.5,
                 dt=1.0e-4, substeps=20, density=1000.0, device="auto"):
     """Forward sim: squeeze a dough blob of size `geom` and return (strain%, F_z grid-impulse,
     final 95th-pct radial spread)."""
-    grid = GridConfig(n_grid=n_grid, grid_lim=0.4)
-    cw, cd, ch = geom
-    pos, vol, floor = block(grid, size=geom, ppc=2)
-    s = Solver(grid=grid, device=device).load_particles(pos, vol)
-    s.set_material(newtonian(eta=eta, density=density, bulk_modulus=9.0e5).with_yield(tau_y))
-    s.add_plane((0, 0, floor), (0, 0, 1), "sticky")
-    cx = cy = grid.grid_lim * 0.5
-    dough_top = floor + ch
-    bh = (0.5 * cw + 0.015, 0.5 * cd + 0.015, 0.6 * grid.dx)
-    be = WarpMPMBackend(solver=s)
-    z = dough_top + bh[2]
-    tool = be.attach_tool((cx, cy, z), bh)
-    fdt = dt * substeps
-    nf = round(press_strain * ch / v_plate / fdt)
+    sc = press_scene(tau_y, eta, geom, n_grid=n_grid, density=density, dt=dt,
+                     substeps=substeps, v_plate=v_plate, press_strain=press_strain,
+                     device=device)
+    s, be, tool = sc["s"], sc["be"], sc["tool"]
+    cx, cy, bh = sc["cx"], sc["cy"], sc["bh"]
+    ch, dough_top, fdt, nf = sc["ch"], sc["dough_top"], sc["fdt"], sc["nf"]
+    z = sc["z0"]
     prev = z
     strain, Fz = [], []
     for f in range(nf + 1):

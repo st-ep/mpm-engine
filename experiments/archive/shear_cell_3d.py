@@ -9,27 +9,27 @@ material, fork id 12) on a held-out speed and compared to truth; the metric is t
 consistent rollout (sim -> learn -> re-sim), not the curve. Trajectories are recorded so the
 held-out rollout can be rendered (see experiments/shear_rollout_video.py).
 
-Run:  python experiments/shear_cell_3d.py          # full sweep + rollout
-      python experiments/shear_cell_3d.py probe    # one segment probe
+Run:  .venv/bin/python -m experiments.archive.shear_cell_3d          # full sweep + rollout
+      .venv/bin/python -m experiments.archive.shear_cell_3d probe    # one segment probe
 """
 from __future__ import annotations
 
 import argparse
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
 # Reuse the 2D helpers from the shear-cell example.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
+from experiments.robotics.common import ENGINE_ROOT, add_repo_to_path, engine_out
+
+sys.path.insert(0, str(ENGINE_ROOT / "examples"))
 from shear_cell_fe import EPS, RHO, TRUTH, _gd, _power_rows, eta_app_true, viscous_prior
 from warpmpm import GridConfig, Solver, newtonian, tabulated_viscous
 from warpmpm.coupling.backend import WarpMPMBackend
 
-REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO))
-OUT = Path(__file__).resolve().parents[1] / "out" / "shear_cell_3d"
+REPO = add_repo_to_path()
+OUT = engine_out("shear_cell_3d")
 G_MAG = 9.81
 N_GRID = 48
 GRID_LIM = 0.4

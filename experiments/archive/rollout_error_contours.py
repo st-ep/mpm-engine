@@ -7,14 +7,14 @@ plane and contour-shaded. Rows = FE / HB-ridge / Bingham, columns = time points.
 the biggest deformation errors concentrate (and confirms they stay small, the kinematics being
 displacement-controlled, while the force carries the model difference).
 
-Run:  python experiments/rollout_error_contours.py
+Run:  .venv/bin/python -m experiments.archive.rollout_error_contours
 """
 from __future__ import annotations
 
 import numpy as np
 from scipy.stats import binned_statistic_2d
 
-import shear_cell_3d as S
+from experiments.archive import shear_cell_3d as S
 from warpmpm import newtonian
 
 OUT = S.OUT

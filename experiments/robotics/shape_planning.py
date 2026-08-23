@@ -12,7 +12,7 @@ limited to vertical presses, and targets are compression or free-extrusion shape
 than directed lateral transport. The engine is not differentiated: planning uses sampled
 CEM, and identification remains a separate convex weak-form solve.
 
-Run: ``python experiments/shape_planning.py t0``
+Run: ``.venv/bin/python -m experiments.robotics.shape_planning t0``
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ import time
 
 import numpy as np
 
+from experiments.robotics.common import engine_out
 from warpmpm import GridConfig, Solver
 from warpmpm.materials import vonmises
 from warpmpm.scenes import block
@@ -186,7 +187,7 @@ def ablation(true_yield=3000.0, action_true=(0.30, 0.18), factors=(0.25, 0.5, 1.
     print(f"\nminimum executed Chamfer at factor={best['yield_factor']} "
           f"({best['executed_chamfer_mm']:.3f}mm); worst guess "
           f"{max(r['executed_chamfer_mm'] for r in rows):.3f}mm", flush=True)
-    out = Path(out or (Path(__file__).resolve().parents[1] / "out" / "ablation_guessed_vs_identified"))
+    out = Path(out or (engine_out("ablation_guessed_vs_identified")))
     out.mkdir(parents=True, exist_ok=True)
     json.dump(dict(true_yield=float(true_yield), action_true=[float(z) for z in a_true],
                    compression_pct=float(comp), rows=rows),

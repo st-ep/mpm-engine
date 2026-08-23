@@ -10,14 +10,14 @@ generic (not truth) dough prior, the parametric analogue of FE's Gram smoothness
 basis, re-simulates both HB variants on the held-out speed, and plots the eta_app curves and
 the force-rollout traces for truth / FE / Bingham / HB-LSQ / HB-ridge.
 
-Run:  python experiments/correct_model_check.py
+Run:  .venv/bin/python -m experiments.archive.correct_model_check
 """
 from __future__ import annotations
 
 import numpy as np
 from scipy.optimize import nnls
 
-import shear_cell_3d as S
+from experiments.archive import shear_cell_3d as S
 from warpmpm import newtonian
 
 OUT = S.OUT

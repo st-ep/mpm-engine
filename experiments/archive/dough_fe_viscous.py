@@ -11,22 +11,20 @@ which is linear in the basis coefficients for eta_app(gd) = sum_k theta_k g_k(gd
 three speeds, solve with the FE viscous basis (nonneg + Gram-smooth) and, separately, with the
 Bingham basis {1/gd, 1}, and compare both recovered eta_app(gd) curves to truth over the
 realized band. Force data is essential: it supplies P_plate. Run:
-  python experiments/dough_fe_viscous.py
+  .venv/bin/python -m experiments.archive.dough_fe_viscous
 """
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 
 import numpy as np
 
+from experiments.robotics.common import add_repo_to_path, engine_out
 from warpmpm import GridConfig, Solver, block, newtonian
 from warpmpm.coupling.backend import WarpMPMBackend
 
-REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO))
-OUT = Path(__file__).resolve().parents[1] / "out" / "fe_viscous"
+REPO = add_repo_to_path()
+OUT = engine_out("fe_viscous")
 G_MAG = 9.81
 EPS = 0.05                       # the newtonian kernel's shear-rate regularization
 # shear-thinning Herschel-Bulkley dough: eta_app(gd) = eta + tau_y/gd + pk*gd^(pn-1)

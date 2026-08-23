@@ -13,26 +13,25 @@ represent the volume. The identification:
   is regressed over the press -> (tau_y, eta).
 
 We build datasets for 1x and 1.5x volume, identify each from "measurements", and compare to
-the ground-truth (tau_y, eta)=(200,40). Run:  python experiments/realdata_pipeline.py
+the ground-truth (tau_y, eta)=(200,40). Run:  .venv/bin/python -m experiments.robotics.realdata_pipeline
 """
 from __future__ import annotations
 
 import argparse
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from skimage.measure import marching_cubes
 
+from experiments.robotics.common import add_repo_to_path, engine_out
 from warpmpm import GridConfig, Solver, newtonian
 from warpmpm.coupling.backend import WarpMPMBackend
 
-REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO))
-OUT = Path(__file__).resolve().parents[1] / "out" / "realdata"
+REPO = add_repo_to_path()
+OUT = engine_out("realdata")
 G = 9.81
 EPS = 0.05   # match the warp-mpm kernel's shear-rate regularization
 TRUTH = (200.0, 40.0)
@@ -145,8 +144,9 @@ def make_dataset(scale, tag, n_grid=64, v_plate=0.08, press_strain=0.5, dt=1.0e-
 
 # ----------------------------------------------------------------------- ingestion + identify
 def identify(tag, t_lo_frac=0.12, t_hi_frac=0.92, reuse_tracks=True):
-    from ident.weakform.field_reconstruction import StreamFunctionField
     from perception.track import track
+
+    from ident.weakform.field_reconstruction import StreamFunctionField
     d = OUT / tag
     meta = _loadj(d / "meta.json")
     force = np.loadtxt(d / "force.csv", delimiter=",", skiprows=1)     # (t, F) measured
