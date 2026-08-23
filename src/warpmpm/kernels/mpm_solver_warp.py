@@ -894,14 +894,14 @@ class MPM_Simulator_WARP:
         freeslip_bound
             Node layers at each of the six domain faces that act as freeslip
             walls, applied inside the grid operator. The wall-normal velocity is
-            zeroed only where it points INTO the wall, so a body separating from
-            the wall keeps its whole outward velocity. This is the correct
-            reading of freeslip and it is what NCLaw's ``grid_op_freeslip`` does
+            zeroed only where it points into the wall, so a body separating from
+            the wall keeps its whole outward velocity. That is the correct
+            reading of freeslip, and it is what NCLaw's ``grid_op_freeslip`` does
             (nclaw/sim/mpm.py); nodes with index < bound and index >
             ``n_grid - bound`` are wall nodes. Prefer it to six
             ``add_surface_collider(..., "slip")`` planes, which project the
-            normal component out unconditionally inside the half-space and so
-            glue a separating body to the wall. 0 turns it off.
+            normal component out unconditionally inside the half-space and hold
+            a separating body against the wall. 0 turns it off.
         mass_eps
             Grid velocity becomes ``mv / (m + mass_eps)``, which damps the fringe
             nodes whose share of a stencil is a rounding error rather than a

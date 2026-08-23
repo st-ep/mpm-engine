@@ -10,10 +10,11 @@
   `stvk`, `volume_taichi`, `volume_ziran`. Plasticity kinds: `identity`,
   `von_mises`, `drucker_prager` (with `cohesion`), `sigma`. Two of the
   elasticities are new to the engine, both transcribed from NCLaw's
-  `nclaw/material/preset.py`: `stvk` is `2 mu F E_green + lam J (J - 1) I` (their
-  StVKElasticity, and NOT the fork's retired `kirchoff_stress_StVK`, none of
-  which is reused), and the two volumetric equations of state, `lam J (J - 1) I`
-  and `kappa (J - J^(1 - gamma)) I` with `gamma` a parameter at their value 2.
+  `nclaw/material/preset.py`: `stvk` is `2 mu F E_green + lam J (J - 1) I`, their
+  StVKElasticity written out from their source. The fork's retired
+  `kirchoff_stress_StVK` was removed as wrong and none of it is reused here. The
+  other two are volumetric equations of state, `lam J (J - 1) I` and
+  `kappa (J - J^(1 - gamma)) I` with `gamma` a parameter at their value 2.
   Existing materials are untouched: 14 is additive, and every kind it composes
   is either a new function or one an existing material already calls.
   This is what lets a cross-engine comparison run on the other engine's own
@@ -47,10 +48,10 @@
   transfer options, all off by default.
   - `freeslip_bound`: freeslip walls applied inside the grid operator on the
     outer node layers of all six faces, zeroing the wall-normal velocity only
-    where it points INTO the wall. This is what freeslip means, and it is what
-    `add_surface_collider(..., "slip")` does NOT do: the collider projects the
-    normal component out unconditionally inside its half-space, so a body
-    leaving the wall is held against it. Prefer this option for domain walls.
+    where it points into the wall, so a body leaving the wall keeps its outward
+    velocity. `add_surface_collider(..., "slip")` projects the normal component
+    out unconditionally inside its half-space, which holds a separating body
+    against the wall. Prefer this option for domain walls.
   - `mass_eps`: grid velocity `mv / (m + eps)`, damping fringe nodes whose share
     of a stencil is a rounding error rather than a physical mass.
   - `empty_node_gravity`: zero-mass nodes carry `gravity * dt` into g2p.
