@@ -5,14 +5,39 @@ body, written against the grid basis functions N_j and integrated in time
 against a window w(t) that vanishes at both ends:
 
     sum_p V_p sigma_p(theta) : (e_d outer grad N_j(x_p)) accumulated with w(t)
-      = - sum_p V_p rho (a_p - g) . e_d N_j(x_p) accumulated with w(t),
+      = - sum_p m_p (a_p - g) . e_d N_j(x_p) accumulated with w(t).
 
-where the time integration by parts replaces the acceleration a_p by stored
-velocities, so no differentiation of data is needed. The stress sigma_p(theta)
-is the material law evaluated on the stored deformation gradient F_p. Every
-law below is linear in its unknowns, so the rows stack into A theta = b and
-one least-squares solve gives theta. No simulator runs during identification;
-no stress or pressure measurement is read. Wall time is seconds per material.
+Here V_p = J_p V_p^0 is the current particle volume and m_p = rho_0 V_p^0
+is the constant particle mass; the ingest builds both. The acceleration
+never appears in the data. Integration by parts in time replaces it, and
+the load the code assembles is
+
+    b_j = INT dt sum_p m_p [ g . e_d N_j chi
+                             + v_p . e_d (v_p . grad N_j) chi
+                             + v_p . e_d N_j chi' ],
+
+with chi(t) the window that vanishes at both window ends
+(ident/weakform/elastic_grid.py, assemble_columns_timeweak). The stress
+sigma_p(theta) is the law evaluated on the stored deformation gradient.
+
+The estimators fall into three classes, and each material section below
+names which one it uses.
+
+1. Momentum fits. The law is linear in its unknowns, the rows stack into
+   A theta = b, one least-squares solve gives theta. No simulation. This
+   covers the jelly and plasticine elastic pairs and the water stiffness.
+2. Level readings. A quantity the return map pins is read directly from
+   the data: the plasticine yield from the strain-histogram spike, the
+   sand friction from the mode of the shear-to-pressure ratio. No
+   simulation. These read the stored F, and sand's ratio reads the stored
+   stress.
+3. Rollout scans. At the positions-only tier the states these estimators
+   need cannot be rebuilt, so one parameter is fit by simulating candidates
+   and matching the measured positions. The simulator runs forward; nothing
+   is differentiated.
+
+Wall time is seconds per material for classes 1 and 2, minutes for
+class 3.
 
 ## Jelly (their corotated law), unknowns mu and lambda
 
@@ -35,10 +60,14 @@ elastic strain of every flowing particle at
 
     || dev eps || = tau_y / (2 mu),
 
-so the flowing particles all sit at one strain level. Read that level,
-multiply by the recovered 2 mu:
+The estimator histograms || dev eps(F_p) || over all finite
+particle-frames, with no flow mask. Yielded samples pile up at one value
+and make a spike; the check accepts only if the top band holds at least 5
+percent of all samples at three or more times the density of the band
+below (jelly, which never yields, is refused by this check). The yield is
+the spike location times the recovered 2 mu:
 
-    tau_y = 2 mu * plateau of || dev eps(F_p) || over flowing particles.
+    tau_y = 2 mu * spike of || dev eps(F_p) ||.
 
 Recovered: E 0.9 percent, nu 0.5 percent, tau_y 1.0 percent. (This section
 always stated the Hencky columns; the code used corotated columns until an
@@ -51,9 +80,9 @@ The yield stress uses the deformation gradient only.
 
 Pressure is computed, not measured, the same way their own module defines it:
 
-    p(F) = mean stress of the Hencky law on F at the configured E = 1e6,
-           nu = 0.2 (both sides fix these; their fit also adjusts only the
-           friction angle).
+    p(F) = -tr(sigma(F)) / 3, with sigma the Hencky stress of F at the
+           configured E = 1e6, nu = 0.2 (both sides fix these; their fit
+           also adjusts only the friction angle).
 
 This reconstruction matches their stored pressure to 0.014 percent, because
 their pipeline itself computes stress from F. On flowing particles the yield
@@ -61,8 +90,9 @@ condition ties shear stress to pressure:
 
     sqrt(J2(dev sigma)) / p = mu_c,   sin(phi) = 3 mu_c / (2 sqrt(3) + mu_c),
 
-so every flowing particle-step reports mu_c, and the level of that
-distribution is the estimate. Recovered: phi = 24.98 degrees against 25.0.
+The cone relation holds for yielded particles under positive pressure.
+The estimator takes the mode of the ratio over shearing, positive-pressure
+particle-frames. Recovered: phi = 24.98 degrees against 25.0.
 The momentum fit was also run, returned 0.87 at a residual of 0.48, and is
 recorded as refused; the residual rule (bar 0.15) selects the estimator.
 Data: deformation gradients, the fixed elastic constants, flow detection from
@@ -176,7 +206,7 @@ failure is what this section repairs.
 The information is present in principle. Handed the true hidden elastic
 state, the momentum fit that treats every sub-yield particle's full stress
 as data recovers the yield stress to 1.5 percent, better than the no-stress
-tier's flow-set-only fit (11.5 percent low). The failure is reconstruction,
+tier's flow-set-only fit (8.9 percent low). The failure is reconstruction,
 not identification.
 
 The reconstruction attempt is the replay estimator

@@ -84,9 +84,16 @@ which is the correct behavior for a basis facing the wrong material class.
    the data lives, pays at the unvisited ends (sand rollout 12x), refuses
    the wrong material class (plasticine, water), and cannot be rolled out
    where the engine lacks the material (jelly).
-5. All three of our methods, on every material, land reconstruction and
-   generalization one to six orders of magnitude below NCLaw's published
-   cells, with the standing two-engine caveat.
+5. Against NCLaw's published numbers, method by method. Least squares
+   wins jelly and plasticine on both scenes, wins sand and water
+   generalization, loses sand reconstruction (6.1e-5 against 2.6e-5, the
+   grid-20 friction bias of point 3) and loses water reconstruction
+   (2.4e-4 against 2.0e-5, the 7.4 percent bulk error). The
+   function-encoder solve wins water on both scenes and sand
+   generalization, loses sand reconstruction, refuses plasticine, and has
+   no jelly rollout. Diff-sim wins every scene at equal budget. These
+   runs use two different engines; the cross-engine addendum below is
+   the controlled comparison.
 
 Floors and hygiene: the JAX-vs-warp forward gap at truth theta is 9.1e-13
 to 3.3e-10 MSE (five to eight orders below every published NCLaw cell);
@@ -125,9 +132,15 @@ volumetric law for water). Cells are position MSE against their trajectory.
 | water | time | 9.0e-11 | 6.3e-6 | 3.5e-4 | 55x |
 | water | vel mean | 5.2e-13 | 1.7e-7 | 1.9e-5 | 112x |
 
-All twenty scenes beat the published cells. Identified parameters from their
-data: jelly E 1.9 percent, nu 4 percent; plasticine E 1.8, nu 3.4, yield 1.1
-percent; sand friction 25.0 degrees within 0.07 percent; water stiffness
+Counting convention, used everywhere below. Each material has five
+rollouts: dataset, time, and three velocity scenes. NCLaw publishes one
+number per axis (reconstruction, time, one velocity aggregate), so the
+tables make 12 aggregate comparisons per tier, and each of the 20 rollouts
+is compared against its axis's published number. Geometry scenes are not
+in this addendum. Every rollout beats its published number. Identified
+parameters from their data: jelly E 1.9 percent, nu 4 percent; plasticine
+E 0.9, nu 0.5, yield 1.0 percent; sand friction 25.0 degrees within 0.07
+percent; water stiffness
 within 0.54 percent.
 
 Each material needed one distinct fix, found by running our simulator twice against their
@@ -290,7 +303,7 @@ The variant legs, each a labeled estimator rolled out on all five scenes:
 
 | material | variant | value | error | dataset | time | vel mean | published |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| plasticine | yield from the momentum fit | 4424 Pa | 11.5 % low | 5.3e-5 | 8.8e-5 | 3.5e-5 | 6.5e-5, 1.4e-4, 4.6e-5 |
+| plasticine | yield from the momentum fit | 4555 Pa | 8.9 % low | 3.1e-5 | 5.0e-5 | 2.1e-5 | 6.5e-5, 1.4e-4, 4.6e-5 |
 | sand | basal-plate pressure | 30.53 deg | 22.1 % high | 7.3e-4 | 9.6e-4 | 1.5e-4 | 2.6e-5, 4.2e-5, 6.5e-5 |
 | sand | depth-closure pressure | 30.72 deg | 22.9 % high | 7.9e-4 | 1.0e-3 | 1.6e-4 | same |
 
@@ -372,9 +385,13 @@ The unknown-form row: the same trained bases as the same-engine study
 (experiments/fe_ls/baseline.py), pointed at their ingested trajectories and
 rolled out on their five scenes under the same engine-compatibility flags as
 the known-form rows (runner: experiments/fe_ls/cross.py, results in
-out/fe_ls_cross/). This is the row at NCLaw's own task difficulty: a
-function fit from one trajectory, no law form given. Full channels, since
-their training consumes the equivalent state.
+out/fe_ls_cross/). Like NCLaw, these rows fit a function from one
+trajectory with no law form given. The information differs by row and each
+table row says so. NCLaw's training reads x, v, C and the elastic F; it
+never reads the stored stress. Our jelly and water rows read F and match
+that. Our sand binned-cone row and the plasticine yield-surface row read
+the stored stress channel, which NCLaw does not; those two rows carry more
+information than NCLaw uses, and the label "oracle stress" marks them.
 
 | material | estimator | identification quality | dataset | time | vel mean | their published | verdict |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -430,12 +447,12 @@ returns zero shear and their exact volumetric law to half a percent, which
 is a material-class detection and a parameter recovery in one solve. Jelly
 pays 8.7 percent modulus error for the family mismatch (their corotated law
 is not in the neo-Hookean, Yeoh, Gent span) and that costs the dataset cell.
-Plasticine localizes the one genuine coverage gap: the elastic half of the
-law is in the family and comes back to 0.16 percent, the plastic half is in
-no shipped basis, and NCLaw's two-network design does cover it, so
-plasticine is the one material where their unknown-form coverage exceeds
-this campaign's. The viscous family, run beside everything as the wrong
-class control, is unusable everywhere (residuals 0.72 to 0.98).
+Plasticine's first pass found a coverage gap: the elastic half of the law
+came back to 0.16 percent and no basis then shipped covered the yield.
+The learned yield surface below closed that gap the same day. The
+elastic-only rollout stays in the table as the measured price of a missing
+yield: 400x. The viscous family, run beside everything as the wrong-class
+control, is unusable everywhere (residuals 0.72 to 0.98).
 
 ### What the tier establishes
 
@@ -471,11 +488,11 @@ class control, is unusable everywhere (residuals 0.72 to 0.98).
    is 4.6 percent. The measured growth is consistent with the model: a 225x
    larger error produced a 61000x larger MSE against a quadratic prediction
    of 50600x.
-5. A yield stress read off the momentum balance instead of the strain
-   plateau costs almost the whole margin. The yield column returns 4424 Pa,
-   11.5 percent low, at residual 0.334, and its rollout sits at 5.3e-5
-   against a published 6.5e-5: still ahead, by 1.2x where the plateau
-   estimate is ahead by 90x.
+5. A yield stress read off the momentum balance costs most of the margin.
+   The yield column returns 4555 Pa, 8.9 percent low, at residual 0.390,
+   and it is refused. Its rollout sits at 3.1e-5 against a published
+   6.5e-5: ahead by 2.1x where the strain-level estimate is ahead by
+   181x.
 6. At the positions-only tier for jelly the identification is not the
    limiting error. E comes back to 1.86 percent from positions alone, but nu
    is 12.5 percent off and, more to the point, the finite-difference frame-0
@@ -488,7 +505,7 @@ class control, is unusable everywhere (residuals 0.72 to 0.98).
 1. Jelly reproduces to the digit. Confirmed.
 2. Plasticine's elastic pair and plateau yield reproduce. Confirmed. The
    claim that the momentum yield column would leave the published margins
-   intact is FALSIFIED: the margin falls from 90x to 1.2x on the dataset
+   intact is FALSIFIED: the margin falls from 181x to 2.1x on the dataset
    scene, and the estimator refuses rather than shipping.
 3. Sand's reconstructed pressure and friction. Confirmed, and the closure
    budget of 4.5 percent was right to within a tenth of a point (4.6
@@ -531,7 +548,7 @@ tier became a jelly-only secondary row after the tier was redefined as
 no-stress; it ran and is reported above. The plan expected plasticine to lose
 its yield reading with the stress channel, and it does not, because that
 reading is the strain plateau of the stored elastic F; the momentum yield
-column asked for in the plan was built anyway and is the variant row, at 11.5
+column asked for in the plan was built anyway and is the variant row, at 8.9
 percent. The two closure sources for sand supply pressure only, so their fits
 have no cone level and refuse on the residual rule instead of falling back;
 their refused values are rolled out in their own legs so the refusal has a
@@ -652,5 +669,7 @@ is now enforceable and refuses jelly as a negative control, the canonical
 per-material settings live in the runner, the ingest refuses ambiguous
 L-convention probes and non-uniform frame spacing, and provenance keys are
 correct after the migration. Queued: full-length kinematics with a
-stress-validity mask (the one-frame horizon, bounded near one percent of a
-cell) and configuration-hashed caches.
+stress-validity mask and configuration-hashed caches. The one-frame horizon
+effect is measured, not assumed: across all 110 recorded cells the final
+frame's error is at most 5.9 times the cell mean, so adding it as one of
+201 sampled frames shifts a cell by at most 2.9 percent, median 0.9.
