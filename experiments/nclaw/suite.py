@@ -732,7 +732,10 @@ def identify_yield(arr: dict, mu_hat: float, plateau_pct: float = 99.9,
         return {"refused": True, "reason": "no finite deformation gradient"}
     cap = float(np.percentile(vals, plateau_pct))
     at_cap = float((vals >= 0.98 * cap).mean())
-    # a cap concentrates mass at the maximum
+    # The return map clips every yielded particle's strain norm to
+    # tau_y / (2 mu), so yielded samples pile up at one value and the
+    # histogram shows a spike there. Elastic data falls off smoothly
+    # and has no spike. The refusal condition looks for the spike.
     below = float(((vals >= 0.94 * cap) & (vals < 0.96 * cap)).mean())
     concentration = at_cap / max(below, 1e-6)
     res = {"eps_y": cap, "plateau_fraction": at_cap,
