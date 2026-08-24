@@ -1,6 +1,6 @@
 """The no-stress tier table: our rollouts, the full-channel run, their published cells.
 
-Reads the ``floor_<material>*_nostress.json`` files ``compare.py --no-stress``
+Reads the ``compare_<material>*_nostress.json`` files ``compare.py --no-stress``
 writes and prints one markdown table per material, plus the recovered
 parameters, the refusals and the identification wall times. The full-channel
 column is the addendum of docs/four_method_comparison.md, entered here as data
@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-OUT = ROOT / "out" / "nclaw_cross_floor"
+OUT = ROOT / "out" / "nclaw_cross_compare"
 
 # per-material flag tag of the comparison, matching the full-channel run
 TAGS = {"jelly": "_nclawbc_sub1", "plasticine": "_nclawbc",
@@ -44,7 +44,7 @@ def _role(scene: str) -> str:
 
 def material_rows(material: str, tier: str = "nostress") -> dict:
     from experiments.nclaw.suite import NCLAW_PUBLISHED
-    path = OUT / f"floor_{material}{TAGS[material]}_{tier}.json"
+    path = OUT / f"compare_{material}{TAGS[material]}_{tier}.json"
     if not path.exists():
         raise SystemExit(f"missing {path}")
     res = json.loads(path.read_text())

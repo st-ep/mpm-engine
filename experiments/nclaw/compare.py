@@ -50,7 +50,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 DEFAULT_TRAJECTORIES = ROOT / "out" / "nclaw_cross_generalize" / "dumps"
-OUT = ROOT / "out" / "nclaw_cross_floor"
+OUT = ROOT / "out" / "nclaw_cross_compare"
 
 # One behavior at a time, against the engine's default grid path. "off" is the
 # baseline (no mode at all); "full" is every behavior at their dataset settings.
@@ -126,7 +126,7 @@ def main(material: str, trajectories: str | Path | None = None,
     tag = (("_nclawbc" if nclaw_bc else "") + ("_nclawlaw" if nclaw_law else "")
            + (f"_sub{substeps}" if substeps is not None else "")
            + (tier_tag[tier] if tier else ""))
-    print(f"[floor] {material}: scenes {scenes} nclaw_bc={nclaw_bc} "
+    print(f"[compare] {material}: scenes {scenes} nclaw_bc={nclaw_bc} "
           f"nclaw_law={nclaw_law} tier={tier or 'full_channels'}")
 
     dataset = DUMPS / f"{material}_dataset_truth.npz"
@@ -135,7 +135,7 @@ def main(material: str, trajectories: str | Path | None = None,
     t_ident = time.time()
     if tier is None:
         ident = stage_identify(material, dump=dataset,
-                              tag=f"crossfloor_{material}{tag}", nclaw_law=nclaw_law)
+                              tag=f"cross_{material}{tag}", nclaw_law=nclaw_law)
         identify_dump = dataset
     else:
         from experiments.nclaw.identify_no_stress import stage_identify_no_stress
@@ -144,7 +144,7 @@ def main(material: str, trajectories: str | Path | None = None,
                         for s in (scenes if tier == "positions_only" else ["dataset"])}
         identify_dump = tier_dump_of["dataset"]
         ident = stage_identify_no_stress(
-            material, dump=identify_dump, tag=f"crossfloor_{material}{tag}",
+            material, dump=identify_dump, tag=f"cross_{material}{tag}",
             nclaw_law=nclaw_law, nclaw_bc=nclaw_bc, substeps=substeps,
             # read for the basal-plate variant only, and only inside one cell
             # of the comparison; every other use of this file at this tier is
@@ -155,7 +155,7 @@ def main(material: str, trajectories: str | Path | None = None,
         variants = ident.get("theta_variants", {})
     wall_identify = time.time() - t_ident
     theta_rec = ident["theta_engine"]
-    print(f"[floor] recovered {theta_rec} vs truth {theta_true} "
+    print(f"[compare] recovered {theta_rec} vs truth {theta_true} "
           f"({wall_identify:.1f}s), variants {sorted(variants)}")
 
     legs: dict[str, dict] = {"truth_theta": theta_true, "recovered": theta_rec}
@@ -178,11 +178,11 @@ def main(material: str, trajectories: str | Path | None = None,
                 run_scene(material, scene, pred, theta=dict(theta), cloud=cloud,
                           nclaw_bc=nclaw_bc, nclaw_law=nclaw_law,
                           substeps=substeps, device=device)
-                print(f"[floor] {scene}/{leg} simulated in {time.time() - t0:.0f}s")
+                print(f"[compare] {scene}/{leg} simulated in {time.time() - t0:.0f}s")
             s = nclaw_position_mse(truth, pred)
             cells[leg] = {k: s[k] for k in
                           ("mse", "mse_final_frame", "rmse_mm", "n_frames")}
-            print(f"[floor] {scene}/{leg}: MSE {s['mse']:.3e} "
+            print(f"[compare] {scene}/{leg}: MSE {s['mse']:.3e} "
                   f"(RMS {s['rmse_mm']:.2f} mm, {s['n_frames']} frames)")
         floor = cells["truth_theta"]["mse"]
         for leg in [k for k in cells if k.startswith("recovered")]:
@@ -204,9 +204,9 @@ def main(material: str, trajectories: str | Path | None = None,
            "identify_diagnostics": {k: ident.get(k) for k in
                                     ("refused_parameters",)},
            "scenes": rows}
-    path = OUT / f"floor_{material}{tag}.json"
+    path = OUT / f"compare_{material}{tag}.json"
     path.write_text(json.dumps(res, indent=2, default=float))
-    print(f"[floor] wrote {path}")
+    print(f"[compare] wrote {path}")
 
 
 # The cross-engine settings per material for reported tables. A bare

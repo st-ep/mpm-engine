@@ -1195,7 +1195,7 @@ def stage_cross(material: str, nclaw_dir: str | Path, manifest: str | Path | dic
         run_scene(material, tag, pred_t, theta=dict(MATERIALS[material]["truth"]),
                   cloud=cloud, log=log)
     score_t = nclaw_position_mse(truth, pred_t)
-    score_t["role"] = "engine_gap_floor"
+    score_t["role"] = "engine_gap_baseline"
     out = {
         "schema_version": "nclaw-cross-1.0",
         "material": material, "scene": tag,
@@ -1211,9 +1211,9 @@ def stage_cross(material: str, nclaw_dir: str | Path, manifest: str | Path | dic
         "n_particles": cloud["pts"].shape[0], "t_end": cloud["t_end"],
         "mse": {k: score[k] for k in
                 ("mse", "mse_final_frame", "rmse_mm", "n_frames", "n_particles")},
-        "engine_gap_floor": {k: score_t[k] for k in
+        "engine_gap_baseline": {k: score_t[k] for k in
                              ("mse", "mse_final_frame", "rmse_mm")},
-        "identification_excess_over_floor": (
+        "identification_excess_over_baseline": (
             float(score["mse"] / score_t["mse"]) if score_t["mse"] > 0 else None),
         "nclaw_published": NCLAW_PUBLISHED[material],
         "caveat": CROSS_CAVEAT,

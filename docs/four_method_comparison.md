@@ -536,7 +536,7 @@ unusable everywhere (residuals 0.72 to 0.98).
 Artifacts and how to rerun. The tier dumps sit next to the trajectories as
 out/nclaw_cross_generalize/dumps/<material>_<scene>_truth_no_stress.npz and
 _positions_only.npz; the rollouts, the per-material results.json and the
-rendered table are under out/nclaw_cross_floor/ (no_stress_table.md), and the
+rendered table are under out/nclaw_cross_compare/ (no_stress_table.md), and the
 identification records under out/nclaw_suite/identify_no_stress_*.json.
 
     .venv/bin/python -m experiments.nclaw.compare jelly      --nclaw-bc --substeps=1 --no-stress
@@ -547,7 +547,7 @@ identification records under out/nclaw_suite/identify_no_stress_*.json.
     .venv/bin/python -m experiments.nclaw.compare plasticine --nclaw-bc --positions-only
     .venv/bin/python -m experiments.nclaw.compare sand       --nclaw-bc --nclaw-law --substeps=1 --positions-only
     .venv/bin/python -m experiments.nclaw.compare water      --nclaw-bc --nclaw-law --positions-only
-    .venv/bin/python -m experiments.nclaw.no_stress_table --out out/nclaw_cross_floor/no_stress_table.md
+    .venv/bin/python -m experiments.nclaw.no_stress_table --out out/nclaw_cross_compare/no_stress_table.md
 
 Deviations from the plan, each with its measurement. The plan's positions-only
 tier became a jelly-only secondary row after the tier was redefined as
