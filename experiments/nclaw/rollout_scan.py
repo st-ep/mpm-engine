@@ -30,7 +30,7 @@ def scan_parameter(material: str, identify_dump: str | Path, param: str,
 
     ``coarse`` is the blind first grid; each entry of ``refine_rounds`` is a
     list of offsets (mode "add") or factors (mode "mul") applied to the best
-    value so far. A rerun re-scores cached rollouts under out/nclaw_cross_compare
+    value so far. A rerun re-scores cached rollouts under out/nclaw_suite/scan
     /scan; it does not re-simulate them.
     """
     from experiments.nclaw.suite import OUT, cloud_from_dump, nclaw_position_mse, run_scene
