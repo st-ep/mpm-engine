@@ -128,10 +128,11 @@ class FrankaArm:
 
     def wrist_load_cell(self, frac: float, f_dough_world, settle: int = 300) -> np.ndarray:
         """Read the wrist force-torque sensor (the load cell) for the reaction the dough
-        exerts on the arm. The arm is held at descent fraction `frac` by its position
-        actuators; we settle it with no load (baseline = the gripper's own weight) and with
-        the dough reaction `f_dough_world` applied to the hand, and return the difference,
-        the dough's contribution at the wrist. By Newton's third law this equals the force we
+        exerts on the arm. Position actuators hold the arm at descent fraction
+        `frac`. The routine settles the arm twice: once with no load (the
+        baseline is the gripper's own weight) and once with the dough reaction
+        `f_dough_world` applied to the hand. It returns the difference, the
+        dough's contribution at the wrist. By Newton's third law this equals the force we
         fed in (= the MPM grid-impulse reaction), now read at the wrist like a real robot.
         Requires ft_sensor=True. Uses forward dynamics, so it mutates the arm state."""
         if self._ft is None:
@@ -159,11 +160,14 @@ class FrankaArm:
     def render_with_particles(self, pts_world, rgba, radius=0.004, table=None, boxes=None,
                               cylinders=None):
         """Composite render: the Franka + the MPM material as spheres in ONE camera view.
-        pts_world (M,3) world-frame particle positions; rgba (M,4) per-particle colour;
-        table=(cx,cy,z,half) draws a flat support box; boxes is a list of (center3, half3,
-        rgba4) drawn as solid boxes (e.g. a plate mounted on the gripper); cylinders is a
-        list of (center3, mat33 or None, radius, half_height, rgba4) drawn as (optionally
-        transparent) cylinders, the glasses of the pouring scene. Subsample pts to fit
+        pts_world: (M, 3) world-frame particle positions.
+        rgba: (M, 4) per-particle colour.
+        table: (cx, cy, z, half) draws a flat support box.
+        boxes: list of (center3, half3, rgba4), drawn as solid boxes, e.g. a
+            plate mounted on the gripper.
+        cylinders: list of (center3, mat33 or None, radius, half_height,
+            rgba4), drawn as cylinders, optionally transparent; the glasses of
+            the pouring scene. Subsample pts to fit
         max_geom."""
         self.renderer.update_scene(self.data, self.cam)
         sc = self.renderer.scene

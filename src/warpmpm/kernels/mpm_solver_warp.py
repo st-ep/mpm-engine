@@ -1786,9 +1786,10 @@ class MPM_Simulator_WARP:
 
     # clone = True makes a copy, not necessarily needed
     def import_particle_x_from_torch(self, tensor_x, clone=True, device="cuda:0"):
-        # copies IN PLACE into the existing warp array: replacing the array would leave
-        # captured CUDA graphs (and any cached views) holding a stale pointer, and the
-        # old alias-a-temporary pattern dangled once the cloned tensor was collected
+        # Copies IN PLACE into the existing warp array. Replacing the array
+        # would leave captured CUDA graphs and cached views holding a stale
+        # pointer, and an alias of a temporary would dangle once the cloned
+        # tensor is collected.
         if tensor_x is not None:
             src = torch2warp_vec3(tensor_x.detach(), dvc=device)
             wp.copy(self.mpm_state.particle_x, src)
@@ -1796,9 +1797,10 @@ class MPM_Simulator_WARP:
 
     # clone = True makes a copy, not necessarily needed
     def import_particle_v_from_torch(self, tensor_v, clone=True, device="cuda:0"):
-        # copies IN PLACE into the existing warp array: replacing the array would leave
-        # captured CUDA graphs (and any cached views) holding a stale pointer, and the
-        # old alias-a-temporary pattern dangled once the cloned tensor was collected
+        # Copies IN PLACE into the existing warp array. Replacing the array
+        # would leave captured CUDA graphs and cached views holding a stale
+        # pointer, and an alias of a temporary would dangle once the cloned
+        # tensor is collected.
         if tensor_v is not None:
             src = torch2warp_vec3(tensor_v.detach(), dvc=device)
             wp.copy(self.mpm_state.particle_v, src)
@@ -1806,9 +1808,10 @@ class MPM_Simulator_WARP:
 
     # clone = True makes a copy, not necessarily needed
     def import_particle_F_from_torch(self, tensor_F, clone=True, device="cuda:0"):
-        # copies IN PLACE into the existing warp array: replacing the array would leave
-        # captured CUDA graphs (and any cached views) holding a stale pointer, and the
-        # old alias-a-temporary pattern dangled once the cloned tensor was collected
+        # Copies IN PLACE into the existing warp array. Replacing the array
+        # would leave captured CUDA graphs and cached views holding a stale
+        # pointer, and an alias of a temporary would dangle once the cloned
+        # tensor is collected.
         if tensor_F is not None:
             tensor_F = torch.reshape(tensor_F, (-1, 3, 3))  # arranged by rowmajor
             src = torch2warp_mat33(tensor_F.detach(), dvc=device)
@@ -1817,9 +1820,10 @@ class MPM_Simulator_WARP:
 
     # clone = True makes a copy, not necessarily needed
     def import_particle_C_from_torch(self, tensor_C, clone=True, device="cuda:0"):
-        # copies IN PLACE into the existing warp array: replacing the array would leave
-        # captured CUDA graphs (and any cached views) holding a stale pointer, and the
-        # old alias-a-temporary pattern dangled once the cloned tensor was collected
+        # Copies IN PLACE into the existing warp array. Replacing the array
+        # would leave captured CUDA graphs and cached views holding a stale
+        # pointer, and an alias of a temporary would dangle once the cloned
+        # tensor is collected.
         if tensor_C is not None:
             tensor_C = torch.reshape(tensor_C, (-1, 3, 3))  # arranged by rowmajor
             src = torch2warp_mat33(tensor_C.detach(), dvc=device)
@@ -1827,18 +1831,20 @@ class MPM_Simulator_WARP:
             wp.synchronize_device(device)   # the source aliases a caller tensor
             
     def import_particle_selection_from_torch(self, tensor_selection, clone=True, device="cuda:0"):
-        # copies IN PLACE into the existing warp array: replacing the array would leave
-        # captured CUDA graphs (and any cached views) holding a stale pointer, and the
-        # old alias-a-temporary pattern dangled once the cloned tensor was collected
+        # Copies IN PLACE into the existing warp array. Replacing the array
+        # would leave captured CUDA graphs and cached views holding a stale
+        # pointer, and an alias of a temporary would dangle once the cloned
+        # tensor is collected.
         if tensor_selection is not None:
             src = torch2warp_int(tensor_selection.detach(), dvc=device)
             wp.copy(self.mpm_state.particle_selection, src)
             wp.synchronize_device(device)   # the source aliases a caller tensor
 
     def import_particle_material_from_torch(self, tensor_material, clone=True, device="cuda:0"):
-        # copies IN PLACE into the existing warp array: replacing the array would leave
-        # captured CUDA graphs (and any cached views) holding a stale pointer, and the
-        # old alias-a-temporary pattern dangled once the cloned tensor was collected
+        # Copies IN PLACE into the existing warp array. Replacing the array
+        # would leave captured CUDA graphs and cached views holding a stale
+        # pointer, and an alias of a temporary would dangle once the cloned
+        # tensor is collected.
         if tensor_material is not None:
             src = torch2warp_int(tensor_material.detach(), dvc=device)
             wp.copy(self.mpm_state.particle_material, src)
@@ -2179,14 +2185,10 @@ class MPM_Simulator_WARP:
         self.grid_postprocess.append(collide)
         self.modify_bc.append(None)
 
-    # a cubiod is a rectangular cube'
-    # centered at `point`
-    # dimension is x: point[0]±size[0]
-    #              y: point[1]±size[1]
-    #              z: point[2]±size[2]
-    # all grid nodes lie within the cubiod will have their speed set to velocity
-    # the cuboid itself is also moving with const speed = velocity
-    # set the speed to zero to fix BC
+    # A box centered at `point` with half-sizes `size`: x in point[0]±size[0],
+    # y in point[1]±size[1], z in point[2]±size[2]. Grid nodes inside the box
+    # get their velocity set to `velocity`. The box itself moves at that same
+    # constant velocity; a zero velocity fixes the boundary condition.
     def set_velocity_on_cuboid(
         self,
         point,
@@ -2542,7 +2544,7 @@ class MPM_Simulator_WARP:
             self.modify_bc.append(None)
 
     # particle_v += force/particle_mass * dt
-    # this is applied from start_dt, ends after num_dt p2g2p's
+    # active from start_dt for num_dt substeps
     # particle velocity is changed before p2g at each timestep
     def add_impulse_on_particles(self, force, dt, point =[1,1,1], size = [1,1,1], num_dt = 1, start_time=0.0, device = "cuda:0"):
         impulse_param = Impulse_modifier()
@@ -2632,7 +2634,7 @@ class MPM_Simulator_WARP:
 
 
     # define a cylinder with center point, half_height, radius, normal
-    # particles within the cylinder are rotating along the normal direction
+    # particles inside the cylinder rotate about the normal axis
     # may also have a translational velocity along the normal direction
     def enforce_particle_velocity_rotation(self, point, normal, 
                         half_height_and_radius, rotation_scale, translation_scale, start_time, end_time, device = "cuda:0"):

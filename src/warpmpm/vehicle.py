@@ -252,9 +252,10 @@ class FloodScene:
         truck = vehicle.particles + self._place
 
         # water slab upstream of the vehicle, resting against the inset walls. The
-        # engine's domain band alone lets pressed water creep to the guard radius, and
-        # a surge can still penetrate a slip plane by most of a cell, so the walls sit
-        # 4 cells in: guard fires at 2.5 dx, leaving 1.5 dx of overshoot room.
+        # Pressed water creeps to the guard radius under the engine's domain band,
+        # and a surge can penetrate a slip plane by most of a cell. The walls
+        # therefore sit 4 cells inside the domain. The guard fires at 2.5 dx,
+        # which leaves 1.5 dx for overshoot.
         wall = 4.0 * dx
         gap = 2.0 * dx
         x0, x1 = wall + 0.5 * h, vx + vehicle.particles[:, 0].min() - gap

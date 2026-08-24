@@ -51,9 +51,10 @@ consistent to the temporal discretization in the same sense as
 ``grid_assembly.py`` documents for the granular case (G2P makes v_p a nodal
 interpolation, so the particle sum is a mass-weighted smoothing of the nodal
 accelerations). On the granular collapse that is
-enough. On an elastic bounce it is not: the gap between the two accelerations is
-the P2G-then-G2P projection residual, it enters divided by dt, and it scales with
-the gradient of the test function, so a single node basis pays the most for it.
+enough. On an elastic bounce it is not enough. The gap between the two
+accelerations is the P2G-then-G2P projection residual. The load divides that
+residual by dt, and the residual grows with the gradient of the test
+function, so a single-node basis suffers the most.
 On the sphere drop this route errs 0.6 percent on E.
 
 The time-weak route removes the acceleration from the data instead of
@@ -70,11 +71,11 @@ cube at 0.07. This is the route the NCLaw comparison ships;
 ``assemble_elastic_grid`` keeps the instantaneous route for the manufactured
 tests, where the load is exact by construction.
 
-Scope. ``assemble_columns_timeweak`` is the law-independent engine: a caller
-hands it the volume-weighted Cauchy stress columns of any law linear in theta,
-plus an optional known stress part for the piece that is data rather than
-unknown, and the node filtering, collider clearance, spatial windows and temporal
-weight are shared. The fixed-corotated pair is the first client and names the
+Scope. ``assemble_columns_timeweak`` is the law-independent engine. A caller
+supplies the volume-weighted Cauchy stress columns of any law linear in
+theta, and may supply a known stress part that enters as data. Node
+filtering, collider clearance, spatial windows, and the temporal weight are
+shared. The fixed-corotated pair is the first client and names the
 module; the constant-friction and EOS legs of the NCLaw comparison reuse it.
 
 Node filtering, three reasons a node is dropped:

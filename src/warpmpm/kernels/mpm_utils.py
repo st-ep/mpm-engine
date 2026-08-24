@@ -1073,9 +1073,9 @@ def p2g_particle(state: MPMStateStruct, model: MPMModelStruct, dt: float, p: int
                         )
                         * dpos
                     )
-                # nested on purpose: warp does NOT short-circuit `and`, and when
-                # n_cdf == 0 the tag grids are (1,1,1) placeholders that must not
-                # be indexed (pc != 0 implies the real grids exist)
+                # Nested on purpose. Warp does not short-circuit `and`. When
+                # n_cdf == 0 the tag grids are (1,1,1) placeholders and must not
+                # be indexed; pc != 0 implies the real grids exist.
                 if pc != 0:
                     nt = state.grid_cdf_tag[ix, iy, iz]
                     if cdf_pair_incompatible(pc, nt):
@@ -1239,7 +1239,7 @@ def g2p_particle(state: MPMStateStruct, model: MPMModelStruct, dt: float, p: int
                     dpos = wp.vec3(wp.float(i), wp.float(j), wp.float(k)) - fx
                     weight = w[0, i] * w[1, j] * w[2, k]  # tricubic interpolation
                     grid_v = state.grid_v_out[ix, iy, iz]
-                    # nested on purpose: no short-circuit in warp; see p2g_particle
+                    # Nested on purpose: warp does not short-circuit `and`; see p2g_particle.
                     incompat = False
                     if pc != 0:
                         incompat = cdf_pair_incompatible(

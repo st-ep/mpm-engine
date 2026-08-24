@@ -30,10 +30,10 @@ import torch
 
 from ident.features.function_encoder_training.train import BasisNet
 
-# the rollout reads the surface at impact-transient pressures far above the
-# settled-flow pressures identification observes, so the grid extends to
-# 3e5 Pa: at 3e4 Pa a cone table diverges from true Drucker-Prager by 7.7 cm,
-# at 3e5 Pa the gap is 7e-6 m (sand dataset)
+# Identification observes settled-flow pressures. The rollout reads the
+# surface at impact pressures far above them, so the grid extends to 3e5 Pa.
+# At 3e4 Pa a cone table diverges from true Drucker-Prager by 7.7 cm; at
+# 3e5 Pa the gap is 7e-6 m (sand dataset).
 P_MIN, P_MAX, N_GRID = -2.0e4, 3.0e5, 161
 
 
