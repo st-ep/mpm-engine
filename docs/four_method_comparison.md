@@ -290,7 +290,7 @@ The full-channel column is the addendum above.
 | water | time | 9.0e-11 | 6.3e-6 | 6.3e-6 | 3.5e-4 | 55x |
 | water | vel mean | 5.2e-13 | 1.7e-7 | 1.7e-7 | 1.9e-5 | 112x |
 
-All twenty scenes beat the published cells at this tier. Recovered
+All 20 rollouts beat their axis's published numbers at this tier. Recovered
 parameters: jelly E 1.93 percent low and nu 4.04 percent high, plasticine E
 0.90 percent low, nu 0.51 percent high and yield stress 1.00 percent low,
 sand friction 24.9755 degrees against 25 (0.098 percent low), water
@@ -353,7 +353,7 @@ fit as primary (it does not refuse) with the scan as a variant leg.
 | water | time | 3.1e-4 | 3.1e-4 (scan) | 3.5e-4 | 1.1x |
 | water | vel mean | 8.8e-6 | 8.8e-6 (scan) | 1.9e-5 | 2.2x |
 
-Nineteen of twenty scenes beat the published cells from positions alone.
+19 of the 20 rollouts beat their axis's published numbers from positions alone.
 The one loss is water's dataset scene, where the correct-parameter rollout
 already scores 3.7e-5 against their published 2.0e-5: the finite-difference
 seed loses that cell before identification enters.
@@ -395,11 +395,11 @@ information than NCLaw uses, and the label "oracle stress" marks them.
 
 | material | estimator | identification quality | dataset | time | vel mean | their published | verdict |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| sand | binned-cone mu(I) curve | bin medians 0.5680 against a true cone of 0.5680 | 3.5e-8 | 6.9e-8 | 1.2e-8 | 2.6e-5 / 4.2e-5 / 6.5e-5 | beats all five, 605x to 84988x |
+| sand | binned-cone mu(I) curve, oracle stress | bin medians 0.5680 against a true cone of 0.5680 | 3.5e-8 | 6.9e-8 | 1.2e-8 | 2.6e-5 / 4.2e-5 / 6.5e-5 | beats all five, 605x to 84988x |
 | sand | momentum-fit mu(I) | curve relL2 0.43 to 0.54, residual 0.38 | 1.8e-3 | 2.4e-3 | 3.4e-4 | same | loses; the row bias the known-form plateau escaped |
 | jelly | W'(I1bar) basis, small-strain projection | shear modulus 8.7 percent, volumetric 9.0 percent | 2.6e-4 | 7.3e-4 | 9.5e-5 | 2.4e-4 / 9.8e-4 / 2.4e-4 | beats four of five; dataset lost at 0.9x |
 | water | volumetric column of the hyperelastic family | lam 57367 against 57692 (0.56 percent); the deviatoric part returns zero, which is the fluid answer | 4.3e-7 | 6.6e-6 | 1.9e-7 | 2.0e-5 / 3.5e-4 / 1.9e-5 | beats all five, 47x to 5126x |
-| plasticine | hyperelastic family on the elastic state | shear modulus 0.16 percent, residual 0.034 | 2.7e-2 (elastic-only rollout) | 2.5e-2 | 1.6e-2 | 6.5e-5 / 1.4e-4 / 4.6e-5 | elastic function recovered; no shipped basis covers the yield, and the elastic-only rollout loses 400x, which prices that gap |
+| plasticine | hyperelastic family on the elastic state, oracle stress via stored F | shear modulus 0.16 percent, residual 0.034 | 2.7e-2 (elastic-only rollout) | 2.5e-2 | 1.6e-2 | 6.5e-5 / 1.4e-4 / 4.6e-5 | elastic function recovered; no shipped basis covers the yield, and the elastic-only rollout loses 400x, which prices that gap |
 
 The plasticity gap of the first pass is now closed. A yield-surface basis
 h(p), with the yield condition sqrt(J2(dev tau)) = h(p), was trained over
@@ -612,7 +612,7 @@ identification only, rollouts excluded.
 | plasticine | NCLaw network | their | no | learned nets | 4.6e-5 to 1.4e-4 (reference) | 300 epochs, A6000 |
 | plasticine | NCLaw sys-id, their run | their | yes | fit | 2.2e-10 on their engine | their diff-MPM |
 | plasticine | LS known form | their | yes | E -0.9, nu +0.5, sigma_y -1.0 | beats 169x to 252x | 7.9 s |
-| plasticine | FE elastic + learned yield surface | their | no | shear +0.2, sigma_y +0.13 | beats 60x to 1742x | seconds each |
+| plasticine | FE elastic + learned yield surface (oracle stress) | their | no | shear +0.2, sigma_y +0.13 | beats 60x to 1742x | seconds each |
 | plasticine | scan, positions only, their density | their | elastic pair assumed | sigma_y exact | beats 6.3x to 50x | 92 s |
 | plasticine | LS, positions only, 27 per cell | ours | yes | E -1.6, nu +5.1, sigma_y +1.9 | own trajectory; residual 0.21, warned | minutes |
 | plasticine | LS known form | ours | yes | mu +0.4, lam +1.0, tau_y -0.4 | 4.6e-8 / 1.9e-8 | 5.4 s |
@@ -621,8 +621,8 @@ identification only, rollouts excluded.
 | sand | NCLaw network | their | no | learned nets | 2.6e-5 to 6.5e-5 (reference) | 300 epochs, A6000 |
 | sand | NCLaw sys-id, their run | their | yes | fit | 1.2e-12 on their engine | their diff-MPM |
 | sand | LS known form | their | yes | phi -0.1 (24.98 vs 25.0) | beats 2144x to 53000x | 6.7 s |
-| sand | FE binned-cone curve | their | no | cone 0.5680 vs 0.5680 per bin | beats 605x to 84988x | seconds |
-| sand | FE yield-surface family | their | no | cone detected, slope -3.6 | loses 3 of 5 (budget is 4.6) | seconds |
+| sand | FE binned-cone curve (oracle stress) | their | no | cone 0.5680 vs 0.5680 per bin | beats 605x to 84988x | seconds |
+| sand | FE yield-surface family (oracle stress) | their | no | cone detected, slope -3.6 | loses 3 of 5 (budget is 4.6) | seconds |
 | sand | scan, positions only | their | elastic pair assumed | phi 24.5 vs 25.0 | beats 1.9x to 32x | 89 s |
 | sand | LS known form | ours | yes | phi +6.5 (grid-20 bias) | 6.1e-5 / 2.1e-5 | 2.3 s |
 | sand | FE mu(I) momentum fit | ours | no | curve relL2 0.16 | 7.4e-4 / 1.9e-4 | seconds |
