@@ -16,7 +16,7 @@ one protocol and it stays one module; the section banners inside are its map.
 Key results (docs/four_method_comparison.md, campaign of 2026-08-21, grid-20
 NCLaw-suite trajectories, NCLaw's position-MSE metric):
 
-  sand      the flagship row. mu(I) through the K = 8 granular basis: curve
+  sand      mu(I) through the K = 8 granular basis: curve
             relL2 0.164 on the realized support, 0.094 dissipation-weighted,
             matching the constant truth at the data's median to 0.2 percent and
             missing at the unvisited ends. Rolled out with the tabulated mu(I)

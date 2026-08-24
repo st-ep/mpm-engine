@@ -1,17 +1,12 @@
-"""Stage 3 of the counterfactual loop: the law from tracks alone.
+"""Stage 3 of the counterfactual loop: the law from the observed frames.
 
-The estimator is the derivative-free scan validated on the NCLaw
-positions-only tier: re-simulate the shared scene at candidate (tau_y, eta),
-project the tracked splats' simulated positions through the SAME camera that
-rendered the observation, and score mean squared pixel error against the
-tracks, visibility-weighted. Coarse grid, then one refinement round around
-the minimum. Nothing is differentiated and the truth file is opened only
-after the scan, to report parameter error.
-
-The scan's whole objective is built from the tracks, the frame-0
-configuration, and the scene script; the pre-registered expectation is a
-tight valley in tau_y and a wide one in eta, because a single press excites
-rate dependence weakly.
+The scan re-simulates the shared scene at candidate (tau_y, eta), renders
+each candidate through the same camera and renderer as the observation,
+masks the frames, and scores the normalized MSE of the silhouette width,
+height, and area time series. simulate_tracks is an alternative pixel-track
+objective kept for diagnostics; main does not use it. Coarse grid, then one
+refinement round around the minimum. Nothing is differentiated, and the
+truth file is opened only after the scan, for reporting.
 
 Run from the engine root, after track:
 
@@ -138,13 +133,11 @@ def main() -> None:
                       "area time series, candidate frames rendered and "
                       "masked identically to the observation"),
         "track_objective_falsified": (
-            "the pre-registered track objective drove the scan to the stiff "
-            "grid edge because the tracker under-reports displacement "
-            "uniformly (tracked/true final displacement ratio 0.65 at the "
-            "median, all 151 tracks always-visible, press motion 0.45 px "
-            "per frame on repetitive dot texture); the silhouette needs no "
-            "tracker and the lateral squeeze-out it measures is the "
-            "material signal under a displacement-controlled press"),
+            "the objective uses the silhouette because the tracker "
+            "under-reports displacement (median tracked-to-true ratio 0.65 "
+            "at 0.45 px per frame of press motion); the silhouette needs no "
+            "tracker, and under a displacement-controlled press the material "
+            "signal is the lateral squeeze-out"),
     }
     (OUT / "identify.json").write_text(json.dumps(res, indent=2))
     print(f"[identify] tau_y {best[0]:g} (truth {truth['tau_y']:g}, "

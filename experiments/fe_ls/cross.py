@@ -4,8 +4,8 @@ The same unknown-form dictionaries as the same-engine study (baseline.py),
 pointed at the ingested cross-engine dumps and rolled out on their five scenes
 with their metric, under the same engine-compatibility flags the known-form
 cross-engine rows use (experiments.nclaw.compare). The opponent row at equal
-task difficulty is NCLaw's learned network, which also fits a function rather
-than a scalar from one trajectory; the known-form rows bound both from above.
+task difficulty is NCLaw's learned network, which also fits a full function
+from one trajectory; the known-form rows bound both from above.
 
 Per material:
   sand        mu(I) through the trained granular basis, the accepted curve
@@ -17,11 +17,10 @@ Per material:
   water       the same hyperelastic family: for a fluid its deviatoric
               coefficients should return near zero and its volumetric column
               is exactly their linear law sigma = lam (J - 1) I, rolled out
-              through the comparison EOS. The viscous family runs beside it
-              and is expected to refuse.
+              through the comparison EOS. The viscous family runs beside it.
   plasticine  every family this campaign ships is the wrong class for an
-              elastoplastic solid, and the recorded refusals are the result.
-              No trained plasticity basis is wired in here.
+              elastoplastic solid, so the legs refuse. No trained plasticity
+              basis is wired in here.
 
 Run from the engine root:
 
@@ -72,17 +71,13 @@ def identify_friction_fe_binned(arr: dict, fe, gd_min: float = 1.0,
                                 eps_gamma: float = 0.02, n_bins: int = 32,
                                 min_count: int = 100, ridge: float = 1.0e-4,
                                 log=print) -> dict:
-    """mu(I) as a curve-valued plateau: binned pointwise cone readings.
+    """mu(I) from binned pointwise cone readings.
 
-    The momentum-row FE fit inherits the impact-phase bias that pushed the
-    known-form momentum solve to 38.9 degrees on their sand; the known-form
-    path escaped through the cone plateau, the mode of the pointwise reading
-    r = sqrt(J2(dev sigma)) / p over the shearing set. This is that estimator
-    made curve-valued: bin r against the inertial number over the post-impact
-    frames, take the median per bin (the median is what rejects sub-yield
-    contamination), and fit the basis coefficients to the binned medians by
-    ridge least squares weighted by bin counts. Reads the stress channel, the
-    same information the known-form plateau reads.
+    Bin r = sqrt(J2(dev sigma))/p against I over post-impact shearing frames,
+    take the median per bin (the median rejects sub-yield readings), and fit
+    the basis to the medians by count-weighted ridge least squares. Momentum
+    rows carry impact-phase bias, so this estimator reads the stress channel
+    instead.
     """
     from common.conventions import (
         equivalent_shear_rate,
@@ -208,11 +203,9 @@ def identify_yield_surface_fe(arr: dict, gd_min: float = 1.0,
     w = np.sqrt(np.asarray(counts, float))
     A = Phi * w[:, None]
     b_vec = np.asarray(medians) * w
-    # curvature anchor: the rollout reads the surface at impact pressures far
-    # above the observed bins, so extrapolation is decided here. Penalizing the
-    # second differences of h over the WHOLE trained grid keeps the curve as
-    # straight as the bins allow; the true families (flat, linear cone) are in
-    # this penalty's null space exactly, so it costs them nothing.
+    # The rollout reads the surface at impact pressures far above the observed
+    # bins. A second-difference penalty on h over the trained grid keeps
+    # extrapolation straight; flat and linear surfaces lie in its null space.
     Phi_g = phi_fn(p_grid)
     n_g = len(p_grid)
     D2 = (np.eye(n_g, k=0) * -2 + np.eye(n_g, k=1) + np.eye(n_g, k=-1))[1:-1]
@@ -344,8 +337,8 @@ def run_material(material: str, log=print) -> dict:
             legs.append(("fe_yield_surface", "yield_table",
                          _yield_surface_theta(ys, tr_s["E"], tr_s["nu"])))
             res["identify"]["yield_surface_fe"]["elastic_pair"] = (
-                "assumed at the configured values, as the known-form sand row "
-                "does and states")
+                "fixed at the configured values (same as the known-form sand "
+                "row)")
         t0 = time.time()
         binned = identify_friction_fe_binned(arr, fe, log=log)
         binned["wall_seconds"] = time.time() - t0
@@ -424,7 +417,7 @@ def run_material(material: str, log=print) -> dict:
             # the stored F is the elastic state, so the hyperelastic family
             # fits it cleanly at every frame; what no shipped basis covers is
             # the yield. Rolling the recovered elastic function WITHOUT a
-            # yield cap prices exactly that gap, and the leg name says so.
+            # yield cap measures that gap, and the leg name says so.
             from ident.weakform.elastic_grid import moduli_to_E_nu
             mu_h = float(hyper["shear_modulus_from_curve"])
             lam_h = float(hyper["bulk_coefficient"]) - 2.0 * mu_h / 3.0
@@ -449,7 +442,8 @@ def run_material(material: str, log=print) -> dict:
         res["note"] = ("the hyperelastic family recovers the elastic function "
                        "because the stored F is the elastic state; no trained "
                        "plasticity basis is wired into this campaign, so the "
-                       "elastic-only rollout leg prices the missing yield")
+                       "elastic-only rollout leg measures the cost of the "
+                       "missing yield")
 
     res["legs_rolled"] = [leg for leg, _, _ in legs]
     if legs:

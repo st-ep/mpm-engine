@@ -64,7 +64,7 @@ The estimator histograms || dev eps(F_p) || over all finite
 particle-frames, with no flow mask. Yielded samples pile up at one value
 and make a spike; the check accepts only if the top band holds at least 5
 percent of all samples at three or more times the density of the band
-below (jelly, which never yields, is refused by this check). The yield is
+below (this check refuses jelly, which never yields). The yield is
 the spike location times the recovered 2 mu:
 
     tau_y = 2 mu * spike of || dev eps(F_p) ||.
@@ -78,7 +78,8 @@ The yield stress uses the deformation gradient only.
 
 ## Sand (their Drucker-Prager), unknown: friction angle
 
-Pressure is computed, not measured, the same way their own module defines it:
+The identification computes pressure from F, the same way their own module
+does:
 
     p(F) = -tr(sigma(F)) / 3, with sigma the Hencky stress of F at the
            configured E = 1e6, nu = 0.2 (both sides fix these; their fit
@@ -93,8 +94,8 @@ condition ties shear stress to pressure:
 The cone relation holds for yielded particles under positive pressure.
 The estimator takes the mode of the ratio over shearing, positive-pressure
 particle-frames. Recovered: phi = 24.98 degrees against 25.0.
-The momentum fit was also run, returned 0.87 at a residual of 0.48, and is
-recorded as refused; the residual rule (bar 0.15) selects the estimator.
+The momentum fit returned 0.87 at residual 0.48; the record marks it
+refused. The residual rule (bar 0.15) selects the estimator.
 Data: deformation gradients, the fixed elastic constants, flow detection from
 velocity gradients. No pressure or stress measurement.
 
@@ -126,7 +127,7 @@ their trajectories with their metric.
 | sand | phi 24.98 vs 25.0 deg | 1.2e-8 | 1.8e-8 | 2.4e-9 | 2.6e-5 / 4.2e-5 / 6.5e-5 | 2144x to 27023x |
 | water | lambda_w +0.54 pct | 3.8e-7 | 6.3e-6 | 1.7e-7 | 2.0e-5 / 3.5e-4 / 1.9e-5 | 52x to 112x |
 
-Information ledger, one line per material:
+Information used, one line per material:
 
 | material | motion data | deformation gradients | stress or pressure | assumptions |
 | --- | --- | --- | --- | --- |
@@ -169,24 +170,21 @@ what the data determines:
   given one: the flowing particles share one deviatoric strain level,
   0.020834, and tau_y = 2 x 118794 x 0.020834 = 4950 Pa, within 1.0 percent.
 - sand: E = 1e6 and nu = 0.2 are assumed at their configured values; only
-  the friction angle is recovered (24.98 against 25.0 degrees). Two reasons
-  this is the honest setup. It is symmetric: their sys-id baseline also
-  fixes E and nu for sand and fits only the friction angle. And the
-  physics: at E = 1e6 the grains deform elastically by about 0.1 percent
+  the friction angle is recovered (24.98 against 25.0 degrees). Their
+  sys-id baseline also fixes E and nu for sand and fits only the friction
+  angle. At E = 1e6 the grains deform elastically by about 0.1 percent
   during the collapse, so the trajectory carries almost no signal about E
-  and the rollout is nearly insensitive to it. A parameter the motion
-  neither reveals nor responds to is better fixed and declared than fitted
-  and overclaimed.
+  and the rollout is nearly insensitive to it. E therefore stays fixed at
+  the configured value.
 - water: the one stiffness recovered (within 0.54 percent). Nothing assumed
   beyond the law form.
 
-Two checks that would turn sand's assumption into a measurement, not yet
-run: the elastic momentum fit on sand's pre-yield strains, to put a
-condition number on how poorly E is determined; and a rollout at a
-deliberately wrong E, say half, to measure how little the trajectory
-responds. Both take minutes.
+Not yet run: the pre-yield momentum fit for E, and a rollout at half the
+configured E. The first puts a condition number on how poorly E is
+determined; the second measures how little the trajectory responds. Both
+take minutes.
 
-## Positions only: what breaks, what refuses, what ships
+## Positions-only tier: failures, refusals, and shipped estimators
 
 The positions-only tier rebuilds every channel from particle positions:
 velocities by central finite differences, gradients and deformation by
@@ -200,14 +198,14 @@ total deformation. On the plasticine dataset throw the stored elastic
 deviatoric strain caps at 0.0208 while the total strain reaches 1.7 by the
 last frame, an 80x divergence. The first positions-only run fed the total
 deformation to estimators expecting the elastic state and returned E ten
-times low and the yield twelve times high without refusing; that silent
-failure is what this section repairs.
+times low and the yield twelve times high without refusing; this section
+describes the fix for that unflagged failure.
 
 The information is present in principle. Handed the true hidden elastic
 state, the momentum fit that treats every sub-yield particle's full stress
 as data recovers the yield stress to 1.5 percent, better than the no-stress
-tier's flow-set-only fit (8.9 percent low). The failure is reconstruction,
-not identification.
+tier's flow-set-only fit (8.9 percent low). Reconstruction fails; identification
+with the true state succeeds.
 
 The reconstruction attempt is the replay estimator
 (mpm_engine/experiments/nclaw/replay.py): fit per-frame deformation
@@ -216,14 +214,15 @@ through the material's own return map, F_e[n+1] = project(F_incr F_e[n]),
 per-particle algebra with nothing differentiated. Validated against the
 stored elastic F it matches strain percentiles to the third decimal through
 the active flow phase, and the at-cap flow set to a Jaccard overlap of
-0.93. It still fails the momentum fit, for a measured reason: the per
-particle direction alignment is 0.98, and those few-degree errors are
+0.93. It still fails the momentum fit; the measurements below locate why. The
+per-particle direction alignment is 0.98, and those few-degree errors are
 spatially correlated (the smoothing misdirects coherently near fronts), so
 they do not average out of the assembled rows; the volumetric part drifts
 multiplicatively (per-particle |dJ| reaches 0.23 at p95 during flow).
 The self-consistent fit lands 2.3x high at relative residual 0.87 and the
-residual gate refuses it. Substituting the true volumetric state halves the
-residual to 0.5, so directions and volume share the blame. A direction-free
+residual check refuses it. Substituting the true volumetric state halves the
+residual to 0.5, so both direction error and volume drift contribute. A
+direction-free
 energy-balance reading (mechanical energy decay over the plastic
 strain-rate integral) gives 7916 against 5000 at residual 0.36 and refuses
 too; their trajectory's own numerical dissipation sits in its numerator.
@@ -238,8 +237,9 @@ with a differentiable MPM. The objective is steep: 5 degrees of friction or
 a factor two of yield costs a factor 25 to 45 in MSE. The scans return
 phi = 24.5 degrees against a truth of 25.0 for sand and tau_y = 5000 Pa
 against a truth of 5000 for plasticine, each at an objective value at or
-below the correct-parameter score on the identify trajectory, which is the
-finite-difference seed floor. Water keeps its weak-form volumetric fit as
+below the correct-parameter score on the identify trajectory, the error
+the finite-difference seed alone produces. Water keeps its weak-form
+volumetric fit as
 primary since it does not refuse, but from moving-least-squares volume
 readings on a splash that fit lands 37.5 percent low; the same scan run as
 a variant leg lands on lam 57692 exactly. The tier's final count, in

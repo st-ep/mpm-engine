@@ -1,7 +1,7 @@
 """Least squares through a FUNCTION-ENCODER basis: the third row of the NCLaw table.
 
-The morning comparison table puts three identification methods on the same
-grid-20 NCLaw-suite trajectories:
+The comparison table puts three identification methods on the same grid-20
+NCLaw-suite trajectories:
 
   1. least squares with the KNOWN constitutive form (the suite's own identify
      legs: one friction coefficient, one elastic pair, one bulk modulus),
@@ -15,40 +15,28 @@ same grid-consistent time-weak assembly, same convex solve. The unknown is a
 FUNCTION (mu(I) for sand, W'(I1bar) for jelly, eta_app(gamma_dot) for the two
 viscous surrogates) expanded in K trained basis functions, so the solve stays
 linear in theta and convex. The recovered curve is then baked into the engine's
-tabulated material and re-simulated, which is what turns a curve error into a
+tabulated material and re-simulated, which turns a curve error into a
 trajectory error.
 
-What the rows measure, stated before the numbers:
+Per-material outcomes, numbers in report.md:
 
-  sand      flagship. mu(I) through the K = 8 granular basis, rolled out with
-            the tabulated mu(I) material (fork id 13) on the cube
-            (reconstruction) and on their blub mesh (generalization).
-  jelly     one-invariant hyperelastic basis, K = 6, plus one volumetric column.
-            Identification only: the engine has no tabulated hyperelastic
-            material, so the rollout cell is UNSUPPORTED and no engine material
-            was added tonight.
+  sand      mu(I) through the trained granular basis, identified and rolled out
+            on the cube (reconstruction) and their blub mesh (generalization).
+  jelly     one-invariant hyperelastic basis plus one volumetric column,
+            identification only; the engine has no tabulated hyperelastic
+            material, so the rollout cell is UNSUPPORTED.
   plasticine, water
-            viscous surrogates. The truth is an elastoplastic solid and an
-            inviscid EOS fluid, so these rows do not measure a recovery of the
-            truth law; they measure how far a viscous surrogate identified from
-            the trajectory carries the rollout. Stated in the report as such.
+            viscous surrogates; the truth is an elastoplastic solid and an
+            inviscid EOS fluid, so these rows measure how far a viscous
+            surrogate carries the rollout.
 
 Regularization, chosen once and applied to every material and every variant: the
 family prior where the trained table ships one (the granular basis carries
 theta_mean and theta_cov from the corpus), a plain ridge where it does not. The
 weight is picked by leave-one-window-out cross-validation of the weak-form rows,
 with ties inside CV_TIE_TOL of the minimum going to the LARGER weight. Nothing
-in the rule looks at the truth, and the full weight sweep, cross-validation
-score included, is written to the results json so the sensitivity is visible
-rather than asserted.
-
-Recorded deviation: the rule above replaced a residual-discrepancy rule (largest
-weight within 1.3 times the unregularized residual) after that rule was measured
-to select a fit with NEGATIVE friction over part of the table, which is not a
-constitutive law. The weak-form residual on this data floors at about 0.08 on
-assembly bias rather than on constitutive error, so it cannot separate models;
-the held-out score can. The cross-validation rule was then applied unchanged to
-every material and variant.
+in the rule looks at the truth. The results json records the full weight sweep
+with its cross-validation scores.
 
 Stages, resumable, one material at a time:
 
@@ -57,13 +45,6 @@ Stages, resumable, one material at a time:
              NCLaw position MSE (sand only; other materials record the reason)
   report     out/fe_ls_baseline/report.md, results_<material>.json, one figure
              per identified curve
-
-Headline numbers, so a reader does not have to run it: sand curve relL2 0.164 on
-the realized support (0.094 dissipation-weighted), rolled out at 7.4e-4
-reconstruction and 1.9e-4 generalization, a 12x gap against known-form least
-squares; jelly shear modulus to 7.0 percent and volumetric to 0.9 percent, with
-the rollout cell UNSUPPORTED; plasticine and water REFUSED by the viscous
-family. Full table in docs/four_method_comparison.md.
 
 Artifacts, all under out/fe_ls_baseline (see experiments.fe_ls.artifact_dir for
 which out/ tree that is): identify_<m>.json, rollout_<m>.json, legs/, dumps/,
@@ -111,23 +92,20 @@ REG_GRID = np.concatenate([[0.0], np.logspace(-9.0, 1.0, 21)])
 # suite's own windows (26 for plasticine, 16 for water) leave two and one
 # surviving windows on these rows, and one window is one held-out unit, so the
 # cross-validation rule cannot run. These are the longest windows that leave at
-# least three: measured survivors are 5 windows for plasticine at 16 and 4 for
-# water at 10.
+# least three: 5 surviving windows for plasticine and 4 for water.
 VISCOUS_WINDOW = {"plasticine": 16, "water": 10}
 
 # Held-out mesh per material, NCLaw's own pairing, at the mild throw (the
-# suite's measured reason: the preset throw drives the stiff sand blub through
-# the walls).
+# preset throw drives the stiff sand blub through the walls).
 HELD_OUT = {m: (suite.NCLAW_HELD_OUT_SHAPE[m], "mild") for m in suite.NCLAW_PUBLISHED}
 
 MATERIALS = ("sand", "jelly", "plasticine", "water")
 
-# Why a material's rollout cell can be empty, stated once here rather than in
-# prose at the end.
+# Reasons a rollout cell is empty.
 ROLLOUT_UNSUPPORTED = {
     "jelly": ("UNSUPPORTED: the warp engine has no tabulated hyperelastic "
               "material, so a recovered W'(I1bar) curve cannot be re-simulated "
-              "without adding one, which was out of scope tonight."),
+              "without adding one."),
 }
 
 
@@ -336,8 +314,8 @@ def curve_errors(y_hat: np.ndarray, y_true: np.ndarray, x_realized: np.ndarray,
                  y_hat_realized: np.ndarray, y_true_realized: np.ndarray) -> dict:
     """Curve error two ways: on the reporting grid, which weights every decade of
     the support equally, and once per surviving particle-frame, which weights it
-    by where the material actually went. The two differ by a lot when the
-    realized support is as skewed as these trajectories make it."""
+    by where the material went. The two differ when the realized support is
+    skewed."""
     ref = float(np.sqrt(np.mean(y_true ** 2))) + 1.0e-300
     lo, hi = np.percentile(x_realized, [5, 95])
     inside = (x_realized >= lo) & (x_realized <= hi)
@@ -363,13 +341,13 @@ def identify_friction_fe(arr: dict, fe, prior, window_frames: int = 10,
                          yield_frac_min: float = 0.97, log=print) -> dict:
     """Mode F friction in 3D: K function-encoder columns where Mode C has one.
 
-    Beside suite.identify_friction, not in place of it, and with every gate of
-    that function preserved: the pressure is DATA (the 3D stress trace), a
-    particle enters only where it is shearing under positive pressure, a
-    cohesionless particle at or below zero pressure is stress free and therefore
-    modelled rather than invalid, the frame list is the longest contiguous
-    shearing run after the post-impact kinetic-energy gate, and a node must pass
-    in every frame of the time-weak window. The single column V p (2 D / |gd|)
+    Runs beside suite.identify_friction and keeps all of its checks: the
+    pressure is DATA (the 3D stress trace), a particle enters only where it is
+    shearing under positive pressure, a cohesionless particle at or below zero
+    pressure is stress free and therefore modelled rather than invalid, the
+    frame list is the longest contiguous shearing run after the post-impact
+    kinetic-energy check, and a node must pass in every frame of the time-weak
+    window. The single column V p (2 D / |gd|)
     becomes K columns V phi_k(I) p (2 D / |gd|), with
 
         I = |gamma_dot|_eps d / sqrt(p / rho_s)
@@ -418,7 +396,7 @@ def identify_friction_fe(arr: dict, fe, prior, window_frames: int = 10,
         Vsig = (w[:, None] * phi)[:, :, None, None] * flow[:, None, :, :]
         Vsig_known = -w[:, None, None] * eye
         I_acc.append(I[at_yield])
-        # the weight the rollout actually cares about: dissipation V p |gd|
+        # the rollout's weight: dissipation V p |gd|
         W_acc.append((Vp * pres[f] * gd[f])[at_yield])
         return Vsig, Vsig_known, ok, gd[f]
 
@@ -462,11 +440,10 @@ def identify_friction_fe(arr: dict, fe, prior, window_frames: int = 10,
     mu_true = suite.friction_to_mu(float(arr["meta"].law_params["friction_angle"]))
     I_clamped = np.clip(I_realized, I_lo, I_hi)
     Phi = fe.phi(I_grid)
-    # the monotonicity and admissibility constraints are imposed on the WHOLE
-    # tabulated range, not on the realized support: the fork's tabulated return
-    # map reads the table anywhere in [1e-4, 1] during its bisection and takes
-    # the first entry as the static yield threshold, so a curve that is only
-    # admissible where the data lives is not a law the engine can run.
+    # The QP constrains the whole tabulated range: the return map reads the
+    # table anywhere in [1e-4, 1] during its bisection and takes the first
+    # entry as the static yield threshold, so a curve that is only admissible
+    # where the data lives is not a law the engine can run.
     con_grid = np.logspace(np.log10(I_lo), np.log10(I_hi), 80)
     gram_grid = np.logspace(np.log10(I_lo), np.log10(I_hi), 257)
     qp_cfg = {"dictionary": fe, "lam": 1.0e-6, "mu_min": 0.05,
@@ -518,7 +495,7 @@ def identify_friction_fe(arr: dict, fe, prior, window_frames: int = 10,
             "the monotone, mu >= 0.05 constrained solve is the headline because "
             "the fork's tabulated mu(I) return map bisects a residual that is "
             "monotone only when mu(I) is non-decreasing; an unconstrained curve "
-            "is not a law that engine can integrate, and the unregularized fit "
+            "is not a law the engine can integrate, and the unregularized fit "
             "is not even nonnegative"),
         "variants": variants,
         "K": K, "dictionary": FE_GRANULAR.name,
@@ -581,7 +558,7 @@ def identify_hyperelastic_fe(arr: dict, window_frames: int = 26,
     recover_fe reading in sim/hyperelastic.py, and theta_vol is the bulk
     modulus. Two references matter and are both reported. The truth is fixed
     corotated, which is NOT in this basis's family (neo-Hookean, Yeoh, Gent), so
-    the small-strain equivalents are the honest targets: W1 -> mu / 2 and
+    the small-strain equivalents are the reference targets: W1 -> mu / 2 and
     theta_vol -> lam + 2 mu / 3, the latter because the corotated deviatoric
     column carries pressure of its own while the basis's deviatoric columns
     carry none.
@@ -699,8 +676,8 @@ def identify_viscous_fe(arr: dict, window_frames: int = 16, frame_stride: int = 
     stress trace, so the columns are V phi_k(log10 |gamma_dot|) 2 D and the
     pressure term is a known load. The truth of both materials this leg is run
     on is NOT viscous (an elastoplastic solid and an inviscid EOS fluid), so the
-    recovered curve is a surrogate by construction; what it is good for is the
-    rollout, and that is what the report states.
+    recovered curve is a surrogate by construction; the report scores it by
+    rollout only.
     """
     from common.conventions import equivalent_shear_rate, pressure_from_cauchy_3d_trace, sym
     from ident.weakform.elastic_grid import assemble_columns_timeweak
@@ -799,9 +776,9 @@ def bake_mu_table(fe, theta: np.ndarray) -> dict:
     clamped linear interpolation on s = log10 I over [smin, smax] and uses the
     FIRST entry as the static yield threshold, so the grid here is exactly the
     dump-schema grid (common.conventions LOG10_I_TABLE_MIN/MAX, MU_TABLE_POINTS)
-    and the ends are the curve's own ends. A non-physical curve is not silently
-    repaired: negative samples are clipped to zero and the clip is reported, and
-    the caller refuses a rollout whose clip is material.
+    and the ends are the curve's own ends. The bake clips negative samples to
+    zero, reports the count, and the caller refuses a rollout whose clip is
+    material.
     """
     from common.conventions import LOG10_I_TABLE_MAX, LOG10_I_TABLE_MIN, MU_TABLE_POINTS
     s = np.linspace(LOG10_I_TABLE_MIN, LOG10_I_TABLE_MAX, MU_TABLE_POINTS)
@@ -908,10 +885,9 @@ def _rollout(material_key: str, shape: str, vel: str, theta: dict, tag: str,
              truth: Path, force: bool, log=print) -> dict:
     """One warp rollout seeded from the truth dump's own frame-0 cloud.
 
-    Seeding from the dump (suite.cloud_from_dump) rather than re-seeding the
-    analytic cloud makes the rollout differ from the truth trajectory in the
-    constitutive law ALONE: identical particles, identical reference volumes,
-    identical initial velocities, identical grid, horizon and time step.
+    Seeding from the dump (suite.cloud_from_dump) makes the rollout differ from
+    the truth in the constitutive law alone: same particles, reference volumes,
+    initial velocities, grid, horizon and time step.
     """
     DUMPS.mkdir(parents=True, exist_ok=True)
     pred = DUMPS / f"{tag}.npz"
@@ -926,11 +902,9 @@ def _rollout(material_key: str, shape: str, vel: str, theta: dict, tag: str,
     score["n_particles_truth"] = int(cloud["pts"].shape[0])
     score["particle_counts_match"] = bool(score["n_particles"] == cloud["pts"].shape[0])
     score.update(_inbox_score(truth, pred))
-    # A rollout that goes non-finite is truncated by the dump writer, and the
-    # metric then compares only the frames that exist, which SCORES A DIVERGENT
-    # LAW WELL. Measured on the plasticine viscous surrogate: 14 frames of 126
-    # and an MSE of 1.7e-6, better than any converged leg. Divergence is
-    # therefore recorded as divergence and the partial score is not comparable.
+    # The dump writer truncates a non-finite rollout, so the metric scores only
+    # surviving frames and can flatter a divergent law. Record divergence; the
+    # partial score is not comparable.
     n_expected = int(np.load(truth)["x"].shape[0])
     score["n_frames_expected"] = n_expected
     score["diverged"] = bool(score["n_frames"] < n_expected)
@@ -952,17 +926,10 @@ def _inbox_score(truth: Path, pred: Path, grid_lim: float = 1.0,
                  frame_step: int = 5, pad: float = 0.01) -> dict:
     """The same metric over the particles the TRUTH keeps inside the box.
 
-    Measured reason this exists: sand_blub_mild_g20_truth.npz seeds two
-    particles at x = 1.015, outside the unit domain, because the suite centres a
-    mesh on the mean of its voxel points rather than on its bounding box and
-    blub's tail reaches past the wall; 106 of 6711 particles are outside the box
-    at some frame, and one truth frame (4) has 64 of them at absurd positions.
-    Those particles sit outside the grid, where the fork's clamp rather than the
-    physics decides where they go, and they dominate a mean over particles. The
-    NCLaw metric samples every fifth frame and happens to skip frame 4, so the
-    headline number is intact; this variant removes the escaped particles
-    outright and is reported beside it. It is identical to the NCLaw metric
-    whenever nothing escapes.
+    The truth seeds 106 of 6711 blub particles outside the unit domain, 64 of
+    them far outside the domain, where the fork's clamp, not the physics, moves
+    them, and they dominate the mean. This variant drops them; it equals the
+    NCLaw metric when nothing escapes.
     """
     tx = np.load(truth)["x"]
     rx = np.load(pred)["x"]
@@ -1022,14 +989,14 @@ def _leg_specs_base(material: str, ident: dict) -> tuple[list[tuple[str, str, di
     Legs, in the order the report prints them:
       fe                 the headline FE curve (monotone constrained, for sand)
       fe_ridge           the same rows solved without the constraints, when its
-                         table is a law at all; the ablation that says whether
-                         the constraints are load bearing
+                         table is a law at all; the ablation that measures what
+                         the constraints contribute
       known_form         the suite's own identified scalar, same dump
-      truth_theta        the truth law, same engine: the same-engine replay floor
+      truth_theta        the truth law, same engine: the same-engine replay
+                         error at the truth law
       flat_table_floor   a CONSTANT table at the truth mu through the tabulated
-                         material: the parameterization floor, which separates
-                         "the curve is wrong" from "the tabulated return map is
-                         a different integrator"
+                         material: the error of the tabulated return map at the
+                         truth mu
     """
     notes: dict = {}
     if material == "sand":
@@ -1070,7 +1037,7 @@ def _leg_specs_base(material: str, ident: dict) -> tuple[list[tuple[str, str, di
     kf_j = ident.get("known_form", {})
     if material == "jelly":
         # the FE leg is unsupported in the engine (no tabulated hyperelastic);
-        # only the known-form and truth-floor legs exist for this material
+        # only the known-form and truth legs exist for this material
         if kf_j.get("refused", True):
             return [], {"status": "known-form identification refused"}
         return [("known_form", "jelly", {"E": kf_j["E"], "nu": kf_j["nu"]}),
@@ -1086,7 +1053,7 @@ def _leg_specs_base(material: str, ident: dict) -> tuple[list[tuple[str, str, di
     # suite._wave_speed sizes the time step from (E, nu) for every engine except
     # "fluid", and the tabulated viscous material is not that engine, so E is set
     # here to make the p-wave speed the FLUID's: lam + 2 mu = E f(nu) must equal
-    # the bulk modulus the EOS actually carries. Left at the material default the
+    # the bulk modulus the EOS carries. Left at the material default the
     # step would be sized from a slower wave than the run has.
     nu_v = float(suite.MATERIALS["visc_table"]["truth"]["nu"])
     f_nu = nu_v / ((1.0 + nu_v) * (1.0 - 2.0 * nu_v)) + 1.0 / (1.0 + nu_v)
@@ -1096,8 +1063,7 @@ def _leg_specs_base(material: str, ident: dict) -> tuple[list[tuple[str, str, di
         "solid, water an inviscid EOS fluid), and the rollout material is a "
         "weakly compressible fluid whose bulk modulus is supplied as data from "
         "the truth. This row measures how far a viscous surrogate identified "
-        "from the trajectory carries the rollout, not a recovery of the truth "
-        "law.")
+        "from the trajectory carries the rollout.")
     # a negative apparent viscosity is not a fluid, and the material factory
     # refuses one outright. The identified curve is therefore reported as
     # refused, and what gets simulated is that curve clipped at zero, named as
@@ -1111,14 +1077,14 @@ def _leg_specs_base(material: str, ident: dict) -> tuple[list[tuple[str, str, di
             f"realized rate support (minimum {fe['eta_min_on_support']:.3g} Pa s), "
             "which is not a fluid; the weak-form residual at the selected weight "
             f"is {fe['residual_rel']:.3f} and the held-out score is "
-            f"{fe['cv_score']:.3f}, so the viscous family is rejected by these rows "
-            "rather than fitted. The simulated leg below is this curve clipped "
-            "at zero, which is a different law.")}
+            f"{fe['cv_score']:.3f}, so these rows reject the viscous family. "
+            "The simulated leg below is this curve clipped at zero, which is a "
+            "different law.")}
     legs = [(leg, "visc_table",
              {"eta_table": eta_tab, "eta_table_smin": smin, "eta_table_smax": smax,
               "bulk_modulus": bulk, "E": E_v, "nu": nu_v})]
-    # known-form and truth-floor legs for the non-sand materials, so the morning
-    # table has all methods and the replay floor on every material, same
+    # known-form and truth legs for the non-sand materials, so the comparison
+    # table has all methods and the replay reference on every material, same
     # subprocess isolation and metric as the FE legs
     kf = ident.get("known_form", {})
     if material == "plasticine" and not kf.get("refused", True):
@@ -1138,9 +1104,8 @@ def stage_rollout(material: str, force: bool = False, isolate: bool = True,
     """Roll out every leg and score the NCLaw metric, one child process per leg.
 
     Each rollout runs in its own process. A law the engine cannot integrate
-    leaves the grid and the fork's out-of-range write is a SIGSEGV rather than
-    an exception on this machine, and an unstable leg must be recorded as an
-    unstable leg rather than take the whole run down with it.
+    leaves the grid, and the fork's out-of-range write is a SIGSEGV; isolation
+    records an unstable leg without killing the run.
     """
     ipath = OUT / f"identify_{material}.json"
     if not ipath.exists():
@@ -1150,7 +1115,7 @@ def stage_rollout(material: str, force: bool = False, isolate: bool = True,
     scores: dict = json.loads(rpath.read_text()) if rpath.exists() else {}
 
     if material in ROLLOUT_UNSUPPORTED:
-        # the FE leg alone is unsupported; the known-form and truth-floor legs
+        # the FE leg alone is unsupported; the known-form and truth legs
         # still run so the comparison table has this material's LS column
         scores["fe"] = {"refused": True, "reason": ROLLOUT_UNSUPPORTED[material]}
         log(f"[rollout] {material} fe leg: {ROLLOUT_UNSUPPORTED[material]}")
@@ -1369,7 +1334,7 @@ def stage_report(materials: list[str], log=print) -> dict:
              "the constitutive law alone.", "",
              "The posterior band on each curve is a variance statement about the "
              "rows that survived",
-             "gating. The curve errors below are dominated by bias, a misspecified "
+             "filtering. The curve errors below are dominated by bias, a misspecified "
              "family or a part",
              "of the support the trajectory never visited, which no posterior of "
              "this form can see;",
@@ -1445,7 +1410,7 @@ def stage_report(materials: list[str], log=print) -> dict:
         lines += [
             f"- dictionary {fe['dictionary']}, K = {fe['K']}, "
             f"{fe['prior']}, weight {fe['reg_weight']:.3g}",
-            f"- rows {fe['n_rows']} of {fe['n_rows_before_gating']} before gating "
+            f"- rows {fe['n_rows']} of {fe['n_rows_before_gating']} before filtering "
             f"({100 * fe['row_survival']:.2f} percent), cond(A^T A) "
             f"{fe['cond_AtA']:.3e}, residual {fe['residual_rel']:.4f} "
             f"(unregularized {fe['residual_rel_unregularized']:.4f})",
@@ -1471,7 +1436,7 @@ def stage_report(materials: list[str], log=print) -> dict:
                 f"{fe['mu_static_table_value']:.3f} at the bottom of the table, "
                 "which is the static yield threshold the return map reads. The "
                 "median value is close to the known form's single coefficient; "
-                "the ends are what the rollout pays for",
+                "the rollout error comes from the ends",
                 f"- known form on the same dump: mu = "
                 f"{ident['known_form']['mu_c']:.4f} "
                 f"({100 * ident['known_form']['mu_rel_err']:.2f} percent), "
@@ -1505,7 +1470,7 @@ def stage_report(materials: list[str], log=print) -> dict:
                 f"range [{fe['eta_min_on_support']:.4g}, {fe['eta_max_on_support']:.4g}]",
                 "- the truth is not a viscous fluid, so there is no truth curve to "
                 "compare against; this row is a surrogate, see the rollout note",
-                f"- what actually gets simulated, the curve clipped at zero: median "
+                f"- the simulated law, the curve clipped at zero: median "
                 f"{_clipped_eta_summary(fe)[0]:.3g}, maximum "
                 f"{_clipped_eta_summary(fe)[1]:.3g} Pa s over the tabulated rate "
                 "range. Near zero the leg is the weakly compressible EOS fluid at "

@@ -14,15 +14,15 @@ that identification quality controls.
 
 --nclaw-bc turns on the engine's NCLaw-compatibility grid mode (their
 approach-only wall clamp, eps-softened mass division, free-fall velocity on
-empty nodes, MLS transfer and their particle position clamp), which is what the
-floor measures the value of. --nclaw-law additionally rolls the material out on
+empty nodes, MLS transfer and their particle position clamp); the truth-theta
+leg measures what this grid mode is worth. --nclaw-law additionally rolls the material out on
 NCLaw's own constitutive pair for it (engine material 14) and identifies in that
 form, which matters wherever their law is not a reparameterization of ours:
 their water is a linear volumetric EOS with no deviatoric term at all.
 --substeps=N fixes the substep count per dumped frame; --substeps=1 is what
 matches their integrator exactly, and their sand needs it because our CFL picks
-two substeps where they take one. --bisect runs the dataset scene's truth-theta
-leg with one behavior at a time so the floor's drop is attributable.
+two substeps where they take one. --bisect reruns the truth-theta leg one
+behavior at a time to attribute the MSE drop.
 
 --no-stress runs the same comparison with the stress channel excluded from
 identification: the dataset scene is copied to a tier dump by
@@ -146,8 +146,9 @@ def main(material: str, trajectories: str | Path | None = None,
         ident = stage_identify_no_stress(
             material, dump=identify_dump, tag=f"crossfloor_{material}{tag}",
             nclaw_law=nclaw_law, nclaw_bc=nclaw_bc, substeps=substeps,
-            # read for the basal-plate variant only, and only inside one cell of
-            # the floor; every other use of this file at this tier is diagnosis.
+            # read for the basal-plate variant only, and only inside one cell
+            # of the comparison; every other use of this file at this tier is
+            # diagnosis.
             # The positions-only tier reads no stress anywhere, so no basal dump.
             basal_dump=(dataset if material == "sand" and tier == "no_stress"
                         else None))
@@ -208,10 +209,8 @@ def main(material: str, trajectories: str | Path | None = None,
     print(f"[floor] wrote {path}")
 
 
-# The canonical cross-engine settings per material, the ones every reported
-# table used. Invoking the runner bare applies them; passing any compatibility
-# flag is an explicit override and is honored as given (that is what an
-# ablation is), so nothing silently changes under an existing command.
+# The cross-engine settings per material for reported tables. A bare
+# invocation applies them; any explicit compatibility flag overrides them.
 CANONICAL = {
     "jelly": {"nclaw_bc": True, "substeps": 1},
     "plasticine": {"nclaw_bc": True},

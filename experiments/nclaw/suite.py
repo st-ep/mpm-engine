@@ -86,14 +86,10 @@ LIN_VEL = R_YUP_TO_ZUP @ LIN_VEL_YUP            # (1.0, 2.0, -1.5)
 ANG_VEL = R_YUP_TO_ZUP @ ANG_VEL_YUP            # (4.0, -4.0, 4.0); a pseudovector
                                                 # under a PROPER rotation
 # NCLaw's geometry evals do NOT use the preset throw: eval/shape.py switches to
-# vel/mild.yaml, linear [1.0, -1.5, -1.5], angular [1, 1, 1] (y-up). Measured
-# reason to honor that here: the preset throw on the stiff sand (E = 1e6,
-# c = 33 m/s) drives the blub cloud through the freeslip walls (truth x
-# reaches 1.435 in the unit box) and the rollout goes NaN at frame 59, so the
-# preset-throw blub cell is a scene-integrity failure, not a comparison. The
-# mild throw is the primary config for the their-mesh generalization cells;
-# the preset-throw shape cells remain as the geometry-isolated secondary set
-# where they stay contained.
+# vel/mild.yaml, linear [1.0, -1.5, -1.5], angular [1, 1, 1] (y-up). The
+# preset throw drives the sand blub cloud through the freeslip walls and the
+# rollout goes NaN. The mild throw is the primary config for the their-mesh
+# cells; the preset-throw cells stay as the geometry-isolated secondary set.
 VELS = {
     "preset": (LIN_VEL, ANG_VEL),
     "mild": (R_YUP_TO_ZUP @ np.array([1.0, -1.5, -1.5]),
@@ -123,11 +119,9 @@ SHAPES: dict[str, dict] = {
     "spot": {"kind": "mesh", "mesh": "spot", "size": 0.8},
     "dragon": {"kind": "mesh", "mesh": "dragon_full", "size": 0.8},
     "armadillo": {"kind": "mesh", "mesh": "armadillo", "size": 0.7},
-    # blub's fins are 1 to 2 particles thick at the default dx/2 pitch (7981
-    # particles), and the sand run goes NaN there (preset throw: rollout NaN at
-    # frame 59; mild throw: truth NaN at frame 39). pitch_div 3 samples about
-    # 27k particles, which stabilizes the thin features and also matches
-    # NCLaw's own geometry-eval count (about 30k, paper p7).
+    # blub's fins are 1 to 2 particles thick at the default pitch and the sand
+    # run goes NaN. pitch_div 3 gives about 27k particles, near NCLaw's own
+    # count.
     "blub": {"kind": "mesh", "mesh": "blub", "size": 0.8, "pitch_div": 3},
 }
 
@@ -151,7 +145,7 @@ MATERIALS: dict[str, dict] = {
         # HENCKY elasticity with the von Mises return: our "metal" (mat 1).
         # The fork's "plasticine" (mat 5) pairs the SAME return map with
         # fixed-corotated elasticity, which is their corotated_plasticine
-        # variant, not the one their dataset uses (user-verified config).
+        # variant, not the one their dataset uses.
         "engine": "metal", "law": "vonmises", "rho": 1000.0,
         "truth": {"E": 3.0e5, "nu": 0.25, "yield_stress": 5.0e3},
         "theta_names": ["mu", "lam", "yield_stress"],
@@ -172,11 +166,8 @@ MATERIALS: dict[str, dict] = {
         "truth": {"E": 1.0e5, "nu": 0.3},
         "theta_names": ["bulk_modulus"],
         # their material/water.yaml: volume_water (mode taichi) + sigma. Their
-        # water has NO deviatoric term and its pressure is linear in J - 1,
-        # where our fluid material is a gamma = 1.1 power law; on their own
-        # water_dataset stress channel, p = -lam (J - 1) fits with lam = 57692
-        # Pa (their E nu / ((1+nu)(1-2nu)) exactly) at zero residual, while the
-        # power-law form fits with negative stiffness and 0.81 residual.
+        # pressure is linear in J - 1; ours is a gamma = 1.1 power law. The two
+        # are not reparameterizations of each other.
         "nclaw_law": {"elasticity": "volume_taichi", "plasticity": "sigma"},
     },
 }
@@ -212,10 +203,9 @@ MATERIALS["yield_table"] = {
     "theta_names": ["eta_table"],
 }
 
-# Keys the engine consumes verbatim. A recovered curve is DATA (a table plus the
-# grid it is read on), not a named scalar, so it rides through engine_params
-# untouched; the grain scales travel with it because they define the inertial
-# number the table is indexed by.
+# Keys the engine consumes verbatim. A recovered curve is a table plus its
+# grid. It passes through engine_params unchanged; the grain scales set the
+# inertial number the table is read at.
 ENGINE_PASSTHROUGH = ("eta_table", "eta_table_smin", "eta_table_smax",
                       "grain_diameter", "grain_density", "bulk_modulus")
 
@@ -245,9 +235,9 @@ def seed_cloud(shape: str, n_grid: int = N_GRID, grid_lim: float = GRID_LIM
 
     Pitch is dx/2 (eight particles per cell), our engine's working density.
     NCLaw seeds the cube at resolution 10 per axis, about 1.1 of their cells,
-    so our particle counts are larger; the metric is computed between OUR truth
-    and OUR rollout on identical clouds, so the count affects the magnitude of
-    the number and not its meaning. Recorded as a deviation.
+    so our particle counts are larger. The metric compares our truth to our
+    rollout on identical clouds, so the count only scales the number. The
+    deviation is recorded in the report.
     """
     cfg = SHAPES[shape]
     dx = grid_lim / n_grid
@@ -286,9 +276,8 @@ def engine_params(material: str, theta: dict | None = None,
 
     ``nclaw_law`` selects the engine's composed material (14) at the elasticity
     and plasticity kinds NCLaw's own config for this material uses, from the
-    entry's ``nclaw_law`` spec. That is a comparison path, not a change of what
-    the engine does by default: the four physical materials keep their own
-    engine materials otherwise.
+    entry's ``nclaw_law`` spec. The four physical materials keep their own
+    engine materials unless ``nclaw_law`` is set.
     """
     spec = MATERIALS[material]
     p = dict(spec["truth"])
@@ -328,13 +317,10 @@ def engine_params(material: str, theta: dict | None = None,
 
 
 def _wave_speed(material: str, kw: dict) -> float:
-    """The p-wave speed the time step is sized from; refuses a non-physical law.
+    """The p-wave speed the time step is sized from.
 
-    The guard is a measurement, not caution: handing the engine an identified
-    pair with nu outside (-1, 0.5) makes lam + 2 mu negative, the wave speed
-    NaN, the time step NaN, and the first p2g2p writes out of the grid, which
-    on this machine is a bus error rather than an exception. A rollout at an
-    unphysical law has to stop here and say so.
+    Refuses non-physical laws. nu outside (-1, 0.5) makes the wave speed NaN
+    and the first p2g2p writes out of the grid (a bus error on this machine).
     """
     rho = MATERIALS[material]["rho"]
     if "bulk_modulus" in kw:
@@ -357,10 +343,8 @@ def cloud_from_dump(path: str | Path) -> dict:
     """Frame-0 state and run geometry of a dump, for a rollout in 1:1 particle
     correspondence with that trajectory.
 
-    This is what makes the NCLaw comparison genuinely cross-engine: seeded from
-    THEIR frame-0 cloud and THEIR frame-0 velocities, our rollout is compared
-    particle by particle against their own trajectory, with no resampling and no
-    correspondence guesswork.
+    Seeding from their frame-0 cloud puts our rollout in 1:1 particle
+    correspondence with their trajectory.
     """
     from ident.io.schema import validate_dump_schema
     meta = validate_dump_schema(path)
@@ -395,8 +379,8 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
 
     ``nclaw_bc`` asks the engine for NCLaw's grid semantics
     (``MPM_Simulator_WARP.set_grid_semantics``): ``True`` takes all of
-    ``NCLAW_GRID_SEMANTICS``, and a dict overrides individual options, which is
-    how one behavior at a time is measured. The walls come from exactly one
+    ``NCLAW_GRID_SEMANTICS``, and a dict overrides individual options for
+    one-behavior measurements. The walls come from exactly one
     source: the engine's freeslip grid operator when ``freeslip_bound`` is set,
     otherwise the six collider slip planes.
 
@@ -405,9 +389,8 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
     equation of state and not a reparameterization of ours.
 
     ``substeps`` fixes the substep count per dumped frame instead of taking it
-    from the CFL. A cross-engine floor needs it: their trajectory is their
-    discrete solution at their own dt, so matching that dt is what makes the
-    comparison about the law rather than about the time discretization.
+    from the CFL. The truth-theta control needs it: their trajectory is their
+    discrete solution at their dt, so the comparison must use that dt.
     """
     import warp as wp
     wp.config.quiet = True
@@ -435,11 +418,9 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
     if substeps is None:
         substeps = cfl_substeps
     elif substeps < cfl_substeps:
-        # an explicit substep count is how a cross-engine comparison matches the
-        # other engine's time step exactly, which is not the same thing as being
-        # more accurate: their reference trajectory IS their discrete solution at
-        # their dt, so subdividing it moves us away from it. Say so when the
-        # request is coarser than our own CFL would pick.
+        # A fixed substep count matches the other engine's dt. Subdividing
+        # below their dt moves the rollout away from their discrete solution,
+        # so log when the request is coarser than our CFL.
         log(f"[gen] substeps={substeps} requested below the CFL's {cfl_substeps} "
             f"(dt {frame_dt / substeps:.2e} vs {dt_cfl:.2e})")
     dt = frame_dt / substeps
@@ -466,11 +447,9 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
         s.set_grid_semantics(**kw_bc)
         log(f"[gen] grid semantics {kw_bc}")
     if kw_bc is None or not kw_bc["freeslip_bound"]:
-        # freeslip walls on all six faces, 3-cell bound: their bc = freeslip.
-        # The walls come from exactly one source: these collider planes, or the
-        # grid mode's own clamp. A bisection leg that turns the mode on for one
-        # OTHER behavior keeps the planes, so the scene still has a floor and
-        # the leg isolates that behavior instead of removing the walls.
+        # Collider slip planes on all six faces when the grid freeslip operator
+        # is off. A bisection leg that enables one other behavior keeps these
+        # planes.
         pad = BOUND_CELLS * dx
         for pt, nrm in (((pad, 0, 0), (1, 0, 0)), ((grid_lim - pad, 0, 0), (-1, 0, 0)),
                         ((0, pad, 0), (0, 1, 0)), ((0, grid_lim - pad, 0), (0, -1, 0)),
@@ -514,8 +493,8 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
 
 def dump_path(material: str, shape: str, kind: str, vel: str = "preset",
               n_grid: int = N_GRID) -> Path:
-    """Grid 32 keeps the historical names; other grids are tagged so a grid-20
-    truth (the diff-sim baseline scenes) never collides with the grid-32 suite."""
+    """Grid 32 dumps carry no grid tag; other grids append _g<n> so a grid-20
+    truth never collides with a grid-32 dump."""
     tag = "" if vel == "preset" else f"_{vel}"
     gtag = "" if n_grid == N_GRID else f"_g{n_grid}"
     return DUMPS / f"{material}_{shape}{tag}{gtag}_{kind}.npz"
@@ -557,8 +536,8 @@ def nclaw_position_mse(truth: Path, pred: Path, grid_lim: float = GRID_LIM,
         # callers that handle divergence themselves pass strict=False
         raise ValueError(
             f"shape mismatch: truth {t['x'].shape} vs prediction "
-            f"{r['x'].shape} ({Path(pred).name}); a truncated rollout is a "
-            "divergence, not a score")
+            f"{r['x'].shape} ({Path(pred).name}); the rollout was truncated "
+            "at a NaN. Pass strict=False to score the surviving prefix.")
     nf = min(t["x"].shape[0], r["x"].shape[0])
     n = min(t["x"].shape[1], r["x"].shape[1])
     diff = (t["x"][:nf, :n] - r["x"][:nf, :n]) / grid_lim
@@ -584,7 +563,8 @@ SQRT3 = float(np.sqrt(3.0))
 def friction_to_mu(phi_deg: float) -> float:
     """Drucker-Prager friction angle -> the mu = sqrt(J2) / p friction coefficient.
 
-    Derived from the fork rather than assumed. ``set_parameters_dict`` stores
+    Derivation follows the fork's ``set_parameters_dict`` and
+    ``sand_return_mapping``. ``set_parameters_dict`` stores
     alpha = sqrt(2/3) * 2 sin phi / (3 - sin phi), and ``sand_return_mapping``
     yields when
 
@@ -592,7 +572,7 @@ def friction_to_mu(phi_deg: float) -> float:
 
     Hencky elasticity gives ||dev tau|| = 2 mu ||dev eps|| and
     tr tau = (3 lam + 2 mu) tr eps = -3 p, so the yield surface is
-    ||dev tau|| = 3 alpha p. This tree measures friction as
+    ||dev tau|| = 3 alpha p. This repository measures friction as
     mu = sqrt(J2) / p with sqrt(J2) = ||dev tau|| / sqrt(2), hence
 
         mu = 3 alpha / sqrt(2) = 2 sqrt(3) sin phi / (3 - sin phi),
@@ -613,7 +593,8 @@ def mu_to_friction(mu_c: float) -> float:
 def _load_arrays(path: Path) -> dict:
     """Positions, velocities, F, volumes and the run's grid config from a dump."""
     from ident.io.schema import validate_dump_schema
-    meta = validate_dump_schema(path)             # gate discipline: never raw keys
+    # schema rule: read keys through validate_dump_schema only
+    meta = validate_dump_schema(path)
     d = np.load(path)
     T, P = d["x"].shape[0], d["x"].shape[1]
     out = {
@@ -721,9 +702,8 @@ def identify_yield(arr: dict, mu_hat: float, plateau_pct: float = 99.9,
 
     The return map caps ||dev eps|| at yield / (2 mu), so the cap IS the yield
     stress divided by twice the shear modulus, and the yield stress follows from
-    the mu the elastic solve already recovered. It is identifiable only if
-    material actually reached the cap: a sub-yield loading gives a lower bound,
-    not a value, and that is a refusal.
+    the mu the elastic solve already recovered. Identifiable only if particles
+    reached the cap. Sub-yield loading gives a lower bound, so the fit refuses.
     """
     T = arr["F"].shape[0]
     vals = np.concatenate([_hencky_dev_norm(arr["F"][f]) for f in range(0, T, 4)])
@@ -744,12 +724,11 @@ def identify_yield(arr: dict, mu_hat: float, plateau_pct: float = 99.9,
            "plateau_pct": plateau_pct}
     if at_cap < plateau_frac_min or concentration < 3.0:
         res.update({"refused": True,
-                    "reason": ("no yield plateau: "
+                    "reason": ("strain cap not reached: "
                                f"{100 * at_cap:.2f} percent of particle-frames "
                                f"in the top band, concentration {concentration:.2f} "
-                               "against the band below (a cap needs >= "
-                               f"{100 * plateau_frac_min:g} percent at >= 3x), "
-                               "so this is a lower bound")})
+                               f"(needs >= {100 * plateau_frac_min:g} percent "
+                               "at >= 3x); the estimate is a lower bound")})
     else:
         res["refused"] = False
     log(f"[ident] yield eps_y={cap:.4e} plateau_frac={at_cap:.2e} "
@@ -772,14 +751,14 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
     V p (2 D / |gamma_dot|_eps). Only particles that are shearing under positive
     pressure enter, since the yield relation holds at yield and not below it;
     yield_frac_min then sets how much of a node's support mass must come from
-    them, the same gate ``grid_assembly.py`` applies to the granular collapse
-    (flow_frac_min there). Requiring all of it drops every node, because roughly
+    them, the same node check ``grid_assembly.py`` applies (flow_frac_min
+    there). Requiring all of it drops every node, because roughly
     a quarter of the particles sit at or below zero pressure on the free surface
     at any instant.
 
-    The flow direction is read from D rather than from the deviatoric elastic
-    strain the return map actually scales, so this is the rate-form reading of a
-    Drucker-Prager solid, exact only where the two are coaxial. It is the same
+    The flow direction comes from D. The return map scales the deviatoric
+    elastic strain, so this rate-form reading is exact only where the two are
+    coaxial. It is the same
     reading the mu(I) legs of this tree use, and the recovered coefficient is
     therefore an effective friction.
 
@@ -787,11 +766,11 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
     pressure in Pa) from a stated model instead of the stress trace, which is
     what a run without the stress channel needs; ``pressure_label`` names the
     model in the result. ``dev_stress`` supplies the matching deviatoric Cauchy
-    stress, which the yield-set gate and the cone-plateau estimator need. With
-    ``pressure`` given and ``dev_stress`` left out, the yield set is gated on
-    kinematics alone (shearing under positive pressure), the plateau estimator
-    is unavailable, and a solve whose residual exceeds the bar refuses rather
-    than falling back.
+    stress, which the yield-set check and the cone-level estimator need. With
+    ``pressure`` given and ``dev_stress`` left out, the yield set is selected on
+    kinematics alone (shearing under positive pressure), the cone-level
+    estimator is unavailable, and a solve whose residual exceeds the bar refuses
+    rather than falling back.
     """
     from common.conventions import (
         equivalent_shear_rate,
@@ -801,15 +780,14 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
     from ident.weakform.elastic_grid import assemble_columns_timeweak, solve_elastic_grid
 
     # the pressure is DATA to this leg, read from the 3D stress trace unless the
-    # caller states a model. An ingested folder that carries no stress channel
-    # has no oracle pressure, and the honest answer is a refusal naming the
-    # missing channel rather than a silent hydrostatic substitution.
+    # caller states a model. With no stress channel and no stated model, refuse
+    # and name the missing channel.
     if pressure is None and not arr["meta"].has_pressure:
         return {"refused": True, "n_rows": 0, "n_rows_before_gating": 0,
                 "reason": ("no oracle pressure: the dump's pressure_source is "
                            f"{arr['meta'].pressure_source!r}, so the stress trace this "
                            "leg needs is absent. Supply a stress channel or state a "
-                           "pressure closure; nothing is substituted here."),
+                           "pressure closure."),
                 "pressure_source": arr["meta"].pressure_source}
 
     D = sym(arr["L"])
@@ -826,19 +804,14 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
             raise ValueError(f"pressure has shape {p.shape}, expected "
                              f"{arr['x'].shape[:2]} (frames by particles)")
 
-    # Yield-set gate. The cone relation holds AT yield only; a shearing particle
-    # whose stress is elastic sits below the cone and biases a global fit high
-    # (measured on NCLaw's sand: the ungated solve returns phi 38.9 against 25,
-    # while the pointwise cone reading r = sqrt(J2)/p on the yield set is 0.5680
-    # against a truth of 0.56802). Stage 1 estimates the cone level as the mode
-    # of r over shearing high-pressure particles, the plateau logic
-    # identify_yield uses for tau_y. Stage 2 keeps only particles within
-    # yield_band of that level; sub-yield positive-pressure particles then gate
-    # their nodes out as the docstring above always intended.
+    # Yield-set check. The cone relation holds at yield only; sub-yield
+    # shearing particles bias the fit high. Stage 1 reads the cone level as the
+    # mode of r over shearing high-pressure particles; stage 2 keeps particles
+    # within yield_band of it.
     if dev_stress is None:
         # no deviatoric stress at all: the cone level is not observable, so the
-        # yield set is gated on kinematics alone and there is no plateau to fall
-        # back on when the solve's residual is high.
+        # yield set is selected on kinematics alone and there is no cone level
+        # to fall back on when the solve's residual is high.
         r_cone = None
         mu_plateau = None
     else:
@@ -857,13 +830,10 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
         on_cone = (True if r_cone is None else
                    np.abs(r_cone[f] / max(mu_plateau, 1e-9) - 1.0) < yield_band)
         at_yield = finite & (p[f] > 0.0) & (gd[f] > gd_min) & on_cone
-        # a cohesionless particle at or below zero pressure is stress free:
-        # sand_return_mapping sets F_elastic = U V^T when tr eps >= 0, measured
-        # here as ||sigma|| of order 0.4 Pa against 1e4 Pa in the bulk. Such a
-        # particle is MODELLED (it contributes nothing) rather than invalid, so
-        # it must not gate its nodes out. What would gate a node out is a
-        # positive-pressure particle below yield, whose stress is elastic and
-        # outside this one-column model.
+        # A cohesionless particle at or below zero pressure is stress free
+        # (sand_return_mapping sets F_elastic = U V^T), so it stays valid with
+        # zero contribution. Only a positive-pressure sub-yield particle
+        # invalidates its nodes.
         free = finite & (p[f] <= 0.0)
         ok = at_yield | free
         if at_yield.sum() < 50:
@@ -877,21 +847,13 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
         return Vsig, Vsig_known, ok, gd[f]
 
     # a time-weak row sums a whole window, so one unusable frame kills it. The
-    # throw starts as a rigid rotation, where D is identically zero and nothing
-    # is at yield, so the frame list starts at the longest contiguous run of
-    # shearing frames rather than at frame zero. The run must stay uniformly
-    # spaced: the temporal weight assumes a constant frame spacing.
+    # frame list is the longest contiguous run of shearing frames; the early
+    # rigid-rotation frames drop out. The run must stay uniformly spaced: the
+    # temporal weight assumes a constant frame spacing.
     #
-    # Post-impact gate, added after a measured bias: over the whole throw the
-    # recovery reads phi = 21.97 deg against truth 25 (residual 0.47), because
-    # the impact frames are collisional and the flow direction read from D is
-    # not coaxial with the elastic strain the return map scales (the caveat in
-    # this docstring realized). The gate keeps frames after the kinetic energy
-    # has passed its global peak and decayed below a fraction of it, i.e. the
-    # frictional spreading regime, the model's domain. Measured sweep on the
-    # sand cube (truth phi = 25): frac 0.5 -> 24.66 (resid 0.083), 0.2 -> 25.22
-    # (0.042), 0.1 -> 25.06 (0.025), below 0.1 the window refuses. 0.1 ships,
-    # relaxing to 0.2 then 0.5 when the trajectory is too short for the window.
+    # Keep frames after the kinetic energy peaks and decays below a fraction of
+    # the peak; the impact frames are collisional and off-model. Try fractions
+    # 0.1, 0.2, 0.5 until the window fits.
     ke = 0.5 * np.einsum("p,fpi->f", arr["mass"], arr["v"] ** 2)
     k_peak = int(np.argmax(ke))
     frames, ke_frac_used = [], None
@@ -922,13 +884,8 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
                 "n_rows_before_gating": sysm.n_rows_before_gating}
     out = solve_elastic_grid(sysm)
     mu_c = out["theta"][0]
-    # The cone level is directly observable on the yield set from the stress
-    # channel, and the plateau estimate reads it to 0.07 percent on NCLaw's
-    # sand. The momentum-balance solve adds value only when its rows are
-    # consistent; when its relative residual exceeds the bar below, the rows
-    # carry assembly bias the gate did not remove (measured on their sand:
-    # solve 0.870 at residual 0.48 against a plateau of 0.5676, truth 0.5680),
-    # and the plateau is the estimate. Both numbers are always recorded.
+    # When the solve's relative residual exceeds solve_residual_bar and a cone
+    # level exists, the cone level is the estimate. Both numbers are recorded.
     solve_residual_bar = 0.15
     mu_c_solve = float(mu_c)
     used = "solve"
@@ -953,8 +910,8 @@ def identify_friction(arr: dict, window_frames: int = 26, frame_stride: int = 2,
                 "n_shearing_frames": len(frames),
                 "shear_rate_coverage": list(sysm.strain_coverage)})
     if high_residual and mu_plateau is None:
-        # nothing observable to fall back on: the solve's rows carry bias the
-        # kinematic gate did not remove and there is no cone level to read.
+        # the kinematic check did not remove the bias and there is no cone
+        # level to read.
         out.update({"refused": True,
                     "reason": (f"solve residual {out['residual_rel']:.3f} exceeds "
                                f"{solve_residual_bar} and no deviatoric stress is "
@@ -1029,8 +986,8 @@ def identify_eos(arr: dict, gamma: float = 1.1, window_frames: int = 26,
                 "volumetric_strain_p99": float(np.percentile(np.abs(Jc - 1.0), 99))})
     if not np.isfinite(stiffness) or stiffness <= 0.0 or out["cond_AtA"] > cond_max:
         out.update({"refused": True,
-                    "reason": (f"volumetric column starved: {key}={stiffness:.3e}, "
-                               f"cond={out['cond_AtA']:.3e}")})
+                    "reason": ("too little volumetric strain to identify: "
+                               f"{key}={stiffness:.3e}, cond={out['cond_AtA']:.3e}")})
     log(f"[ident] eos {form} {key}={stiffness:.4e} rows={sysm.n_rows} "
         f"cond={out['cond_AtA']:.2e} refused={out['refused']}")
     return out
@@ -1051,8 +1008,7 @@ def theta_for_engine(material: str, ident: dict,
     """Recovered parameters in the engine's own arguments, plus what was refused.
 
     A refused parameter falls back to its known-class prior value, which is the
-    truth entry here, and the fallback is named in the returned list so the
-    report states it rather than hiding it.
+    truth entry here, and the returned list names the fallback for the report.
     """
     from ident.weakform.elastic_grid import moduli_to_E_nu
     truth = MATERIALS[material]["truth"]
@@ -1268,7 +1224,7 @@ def stage_cross(material: str, nclaw_dir: str | Path, manifest: str | Path | dic
     log(f"[cross] {material}/{tag} theta={ident['theta_engine']} "
         f"MSE={score['mse']:.3e} (RMS {score['rmse_mm']:.2f} mm over "
         f"{score['n_frames']} frames, {score['n_particles']} particles); "
-        f"engine-gap floor at truth theta {score_t['mse']:.3e} "
+        f"engine-gap baseline at truth theta {score_t['mse']:.3e} "
         f"(identification excess {score['mse'] / max(score_t['mse'], 1e-300):.2f}x)")
     return out
 
@@ -1282,8 +1238,8 @@ def stage_cross(material: str, nclaw_dir: str | Path, manifest: str | Path | dic
 # generalization axes are Table 2 (page 7), tasks (a) longer horizon,
 # (b) initial velocity, (c) geometry. Their per-table Overall columns do not
 # recompute from the cells, so only the per-cell values are used here. A cell
-# left as None is not published for the matched case and prints blank rather
-# than being approximated. The engine caveat below travels with the table.
+# left as None is not published for the matched case and prints blank.
+# ENGINE_CAVEAT accompanies the table in every report.
 NCLAW_PUBLISHED: dict[str, dict[str, float | None]] = {
     "jelly": {"reconstruction": 2.4e-4, "generalization": 4.1e-4,
               "time": 9.8e-4, "velocity": 2.4e-4},
@@ -1296,8 +1252,9 @@ NCLAW_PUBLISHED: dict[str, dict[str, float | None]] = {
 }
 # Strongest published baseline, for context on the reconstruction column: their
 # "neural" row beats them on jelly reconstruction at 1.2e-5. Their labelled and
-# system-identification oracles sit below the rule in the same tables and are
-# excluded from their own shading, so they are not comparison targets here.
+# system-identification oracles sit below the horizontal divider in their
+# tables and are excluded from their own shading, so they are not comparison
+# targets here.
 NCLAW_GEOMETRY_CONFOUND = (
     "NCLaw's geometry column, task (c), changes four things at once against "
     "their reconstruction column: the mesh, the particle count (about 30k), the "
@@ -1310,10 +1267,8 @@ NCLAW_GEOMETRY_CONFOUND = (
 ENGINE_CAVEAT = (
     "NCLaw's column is their published number from their own MPM engine, grid, "
     "particle count and time step. Ours is our engine's truth against our "
-    "engine's rollout on identical particle clouds. The protocol is matched "
-    "(scene, throw, walls, duration, metric); the two engines are not the same "
-    "engine, so read the columns as two self-consistent measurements of the "
-    "same experiment rather than as a head-to-head on one simulator."
+    "engine's rollout on identical particle clouds. The columns are two "
+    "self-consistent measurements of the same protocol on two engines."
 )
 
 

@@ -1,8 +1,8 @@
 # Four methods on the same trajectories: LS, LS + function encoder, diff-sim, NCLaw
 
-One overnight campaign (2026-08-21) answers one question: given a single
-thrown-cube trajectory per material, how do the recovered laws and their
-rollouts compare across four ways of getting them. Three methods ran on
+One overnight campaign (2026-08-21) compared four methods on the same
+trajectories: given a single thrown-cube trajectory per material, how do
+the recovered laws and their rollouts compare. Three methods ran on
 identical warp truths at grid 20 (their training grid), scored by NCLaw's
 own metric (position MSE, unit box, every 5th frame) on the training cube
 (reconstruction) and each material's held-out mesh (generalization). The
@@ -14,8 +14,8 @@ LS + FE = the same convex solve with a trained function-encoder basis in
 place of the known form. Diff-sim = gradient descent through a
 differentiable JAX MPM rebuilt for this purpose (warp is never
 differentiated), forward-mode AD, best of 5 initializations at a fixed
-equal budget. Truth floor = the truth parameters replayed in the same
-engine (bitwise zero by determinism).
+equal budget. Truth replay = the truth parameters replayed in the same
+engine (the error at the true parameters).
 
 ## Rollout table (position MSE; recon = cube, gen = held-out mesh)
 
@@ -28,7 +28,7 @@ engine (bitwise zero by determinism).
 
 (a) the warp engine has no tabulated hyperelastic material, so the
 recovered W'(I1) curve (shear modulus 7.0 percent, volumetric 0.9 percent)
-cannot be re-simulated; nothing was faked to fill the cell.
+cannot be re-simulated.
 (b) the FE viscous surrogate for an elastoplastic solid: the identification
 itself REFUSED (negative apparent viscosity over 24 percent of the rate
 support), and the clipped-at-zero curve diverges on the cube.
@@ -36,11 +36,11 @@ support), and the clipped-at-zero curve diverges on the cube.
 bulk (7.4 percent low), while the FE-viscous cell receives the truth bulk
 as data by design and adds a near-zero viscosity table, so it measures the
 surrogate's deviatoric contribution, not a bulk recovery.
-(d) the equal-budget best init continued at reduced step to a plateau (an
-extra 15 to 46 minutes per material). This column answers the accuracy
-question with cost removed; the equal-budget column answers the cost
-question. Converged, the diff-sim beats the convex solve on all seven
-parameters, at 774x to 3068x its total wall time.
+(d) the equal-budget best init continued at reduced step until the loss
+stopped decreasing (an extra 15 to 46 minutes per material). This column
+reports accuracy without a time limit; the equal-budget column reports
+accuracy at fixed time. Converged, the diff-sim beats the convex solve on
+all seven parameters, at 774x to 3068x its total wall time.
 
 ## Identification table (same dumps, per material)
 
@@ -54,36 +54,36 @@ parameters, at 774x to 3068x its total wall time.
 LS + FE identification (curve errors on the realized support): sand mu(I)
 relL2 0.164 (0.094 dissipation-weighted; the curve matches the constant
 truth at the data's median to 0.2 percent and misses at the unvisited
-ends, which is what the 12x rollout gap against known-form LS measures);
+ends; the 12x rollout gap against known-form LS comes from those ends);
 jelly W'(I1) shear 7.0 percent; plasticine and water REFUSED by the
-viscous family (negative viscosity over 24 and 65 percent of support),
-which is the correct behavior for a basis facing the wrong material class.
+viscous family (negative viscosity over 24 and 65 percent of support);
+the basis family does not contain these materials, so refusal is expected.
 
-## What the night establishes
+## Findings
 
-1. The trade is budget, and the plasticine degeneracy is a valley rather
-   than a wall. At equal budget the position-matching loss leaves the
-   plasticine elastic pair 60 percent wrong, trading mu against lam at
-   nearly fixed wave speed (the DPSI Table-3 phenomenon, reproduced from
-   our own harness), while the weak form separates all three parameters in
-   5 seconds. Continued past the budget, the same descent escapes the
-   valley completely (mu 0.02 percent, lam 0.01 percent). So the diff-sim
-   converged beats the convex solve on every parameter, at three to four
-   orders of magnitude more wall time; the convex solve gets within a few
-   percent in seconds and is never initialization-dependent.
-2. The sand chaos expectation was falsified. The phi loss landscape is
-   unimodal and smooth at both coarse and fine scales at this horizon
-   (0.5 s, grid 20); no initialization fails. Gradient descent through
-   granular contact is viable at NCLaw's own scale, so the differentiators
-   are cost and the parameter degeneracies rather than convergence
-   failures.
+1. At equal wall time the plasticine elastic pair stays 60 percent wrong;
+   with more time the same descent converges. The equal-budget
+   position-matching loss trades mu against lam at nearly fixed wave speed
+   (the DPSI Table-3 phenomenon, reproduced from our own harness), while
+   the weak form separates all three parameters in 5 seconds. Continued
+   past the budget, the descent converges (mu 0.02 percent, lam 0.01
+   percent). So the diff-sim converged beats the convex solve on every
+   parameter, at three to four orders of magnitude more wall time; the
+   convex solve gets within a few percent in seconds and is never
+   initialization-dependent.
+2. The runs falsified the sand chaos expectation. The loss as a function
+   of phi is unimodal and smooth at both coarse and fine scales at this
+   horizon (0.5 s, grid 20); no initialization fails. Gradient descent
+   through granular contact is viable at NCLaw's own scale. Cost and
+   parameter degeneracies separate the methods; convergence does not.
 3. The LS sand row carries a grid-20 bias (+6.5 percent in phi, against
    +0.8 percent at grid 32): the weak-form rows degrade faster with grid
-   coarseness than the diff-sim loss does. Worth its own follow-up.
-4. The FE basis is honest about its scope: it matches the known form where
-   the data lives, pays at the unvisited ends (sand rollout 12x), refuses
-   the wrong material class (plasticine, water), and cannot be rolled out
-   where the engine lacks the material (jelly).
+   coarseness than the diff-sim loss does. A follow-up run at grid 32
+   would quantify this.
+4. The FE basis errs where the data is absent: it matches the known form
+   where the data lives, pays at the unvisited ends (sand rollout 12x),
+   refuses the wrong material class (plasticine, water), and cannot be
+   rolled out where the engine lacks the material (jelly).
 5. Against NCLaw's published numbers, method by method. Least squares
    wins jelly and plasticine on both scenes, wins sand and water
    generalization, loses sand reconstruction (6.1e-5 against 2.6e-5, the
@@ -95,10 +95,10 @@ which is the correct behavior for a basis facing the wrong material class.
    runs use two different engines; the cross-engine addendum below is
    the controlled comparison.
 
-Floors and hygiene: the JAX-vs-warp forward gap at truth theta is 9.1e-13
-to 3.3e-10 MSE (five to eight orders below every published NCLaw cell);
-sand's best diff-sim init dipped below that floor and absorbed part of the
-discretization gap into phi, detected by the floor comparison. The
+Reference errors and checks: the JAX-vs-warp forward gap at truth theta is
+9.1e-13 to 3.3e-10 MSE (five to eight orders below every published NCLaw cell);
+sand's best diff-sim init dipped below that reference error; the comparison
+against it detected the discretization gap absorbed into phi. The
 truth-parameter replay is bitwise zero in every cell. Sand blub's truth
 seeds 106 escaping particles; in-box MSE accompanies every affected cell.
 
@@ -151,17 +151,18 @@ own; the second adds whatever the identification got wrong:
    freeslip zeroes only approaching wall-normal velocity, their grid divides
    by mass plus 1e-7, and their transfer is MLS. These are now five opt-in
    engine options, off by default and bit-identical when off; the wall fix
-   alone was worth 141x on the plasticine floor.
+   alone cut the plasticine truth-replay error 141x.
 2. Water needed their volumetric law: linear Kirchhoff stress lambda J(J-1)I
    at lambda = 57692 Pa, fitted from their stress channel with residual
    0.0000 while our power-law form fits with negative stiffness. Their code
    comments say the stiffer, more realistic law breaks their gradients; the
    comparison flag implements theirs, our default is unchanged.
-3. Sand needed the estimator, not the engine: the cone level is directly
-   observable on the yield set (plateau 0.5676 against a truth of 0.5680),
-   while the momentum-balance fit through a body only partly at yield reads
-   47 percent residual and 0.87. The identification now takes the plateau
-   whenever the solve residual exceeds 0.15, with both values recorded.
+3. For sand the engine was correct; the estimator was the problem: the
+   shear-to-pressure ratio is constant over the yield set (0.5676 against
+   0.5680), while the momentum-balance fit through a body only partly at
+   yield reads 47 percent residual and 0.87. The identification takes that
+   constant level whenever the solve residual exceeds 0.15, with both
+   values recorded.
 
 The sys-id comparison closes the loop: their own gradient-based oracle on
 their engine reports 3.3e-13 to 2.5e-8 on these scenes; the convex solve
@@ -190,8 +191,9 @@ dominated by the engine difference and pins the conclusion both engines now
 agree on: the known constitutive form is worth four to nine orders of
 magnitude over the learned network on their own benchmark, whether reached
 by gradient descent (their sys-id, our diff-sim) or by the convex solve in
-seconds. The remaining number is the truth-theta engine-gap floor on their
-trajectories; the cross stage computes and stores it on arrival
+seconds. The remaining number is the engine-gap error at the true
+parameters on their trajectories; the cross stage computes and stores it on
+arrival
 (identification_excess_over_floor in cross_<material>_<scene>.json).
 
 ## No-stress tier (2026-08-23): plan
@@ -212,7 +214,7 @@ Per material, what the tier changes:
 - jelly: the elastic momentum fit on the stored channels, unchanged.
 - plasticine: the same elastic pair, plus a second yield estimator, the
   momentum fit with a yield column on the fast-shearing set, reported next
-  to the plateau reading of the stored elastic F.
+  to the strain-cap reading of the stored elastic F.
 - sand: three pressure sources feeding the same friction fit. Primary is
   the Hencky volumetric relation on the stored F at E = 1e6 and nu = 0.2,
   which is how their own module gets pressure. Variant is pressure measured
@@ -231,15 +233,15 @@ Per material, what the tier changes:
 1. Jelly's identification never reads stress, so the tier must reproduce
    the full-channel parameters to the digit (E 98071.36, nu 0.208082) and
    the five jelly cells with them. Any change falsifies this.
-2. Plasticine's elastic pair is in the same position. Its plateau yield
+2. Plasticine's elastic pair is in the same position. Its strain-cap yield
    reading takes the saturation of the deviatoric Hencky strain of the
    stored elastic F, so it is stress-free as well and should also
    reproduce (5055.05 Pa, 1.1 percent high). The new momentum-fit yield
-   column is the estimator that does not use the plateau at all; expect it
-   within a few tens of percent, which at quadratic growth of rollout error
-   in parameter error leaves the 90x to 156x published margins intact. A
-   refusal on its residual check is a legitimate outcome and is reported as
-   the result rather than replaced.
+   column is the estimator that does not use the strain-cap reading;
+   expect it within a few tens of percent, which at quadratic growth of
+   rollout error in parameter error leaves the 90x to 156x published
+   margins intact. If its residual check refuses, the report keeps the
+   refusal as the result.
 3. Sand is the only material whose full-channel identification read the
    stress channel. Their stress channel is elasticity(F) of the stored
    elastic F, so the Hencky volumetric relation at their fixed E and nu
@@ -249,7 +251,7 @@ Per material, what the tier changes:
    variant should land within a few percent. The pure depth closure should
    over-predict pressure, which under-predicts friction because the fitted
    coefficient scales as the inverse of the pressure scale, and its error
-   should exceed the 4.5 percent budget that sand's 4200x margin allows
+   should exceed the 4.5 percent tolerance that sand's 4200x margin allows
    before a published cell is lost.
 4. Water's volumetric fit reads J from the stored F and never touched
    stress, so it should reproduce the full-channel 0.54 percent with no
@@ -309,8 +311,8 @@ The variant legs, each a labeled estimator rolled out on all five scenes:
 
 Both sand variants refused on their residual check and the plasticine one
 did as well, so what the tier ships for them is the known-class prior; the
-rows above roll out the refused value instead, which is the only way to
-price the refusal. In this comparison the prior entry is the truth value, so
+rows above roll out the refused value instead, which measures its cost.
+In this comparison the prior entry is the truth value, so
 a refused parameter's shipped row would be the correct-property row and
 would say nothing about the estimator.
 
@@ -321,7 +323,7 @@ from central finite differences, gradients and deformation from moving least
 squares, and every rollout is seeded from the tier's own finite-difference
 frame-0 velocity, so the correct-parameter column is no longer near zero:
 it now measures the seeding error, about 1e-5 to 4e-5 depending on the
-scene, and that is the floor any cell at this tier can reach.
+scene; no cell at this tier can score below the seeding error.
 
 The first run of this tier for plasticine returned E ten times low and the
 yield twelve times high without refusing. The cause is structural: the
@@ -330,8 +332,8 @@ positions only give the total deformation, and on the plasticine throw the
 two diverge 80x once the material flows. The repair chain is measured in
 docs/nclaw_identification_equations.md: the momentum fit recovers the yield
 to 1.5 percent when handed the true hidden state, the replay reconstruction
-of that state from positions fails the fit's residual gate (2.3x high at
-residual 0.87, refused), and what ships for the plastic materials is a
+of that state from positions fails the fit's residual check (2.3x high at
+residual 0.87, refused), and the reported estimator for the plastic materials is a
 derivative-free rollout scan with the elastic pair assumed and stated: roll
 the engine at a candidate from the tier's frame-0 seed, score position MSE
 against the measured identify trajectory. NCLaw's sys-id baseline optimizes
@@ -362,18 +364,19 @@ Recovered parameters at this tier: jelly E 101861 (1.86 percent high), nu
 0.17497 (12.5 percent low), both from the weak-form fit. Plasticine yield
 5000 Pa against 5000 (exact, scan; twelve rollouts). Sand friction 24.5
 degrees against 25.0 (scan; fourteen rollouts). Water stiffness by the scan
-lands on lam 57692 exactly (eleven rollouts; the scan bowl puts a 5 percent
-stiffness offset at 2x the minimum MSE), while the weak-form primary reads
+lands on lam 57692 exactly (eleven rollouts; the scan objective doubles at
+a 5 percent stiffness offset), while the weak-form primary reads
 lam 37.5 percent low from moving-least-squares volume readings on a splash;
-its rollouts lose every scene, which prices that bias. The scan objective is
+its rollouts lose every scene; the loss quantifies the bias. The scan
+objective is
 steep for the plastic parameters too: 5 degrees of friction or a factor two
 of yield costs a factor 25 to 45. Identification wall times: jelly 4.1 s,
 plasticine 92 s (24 s replay diagnostics, 68 s scan), sand 89 s, water's
 scan about 2 minutes.
 
-The refusal calibration this tier bought: the replay estimators refuse
-loudly (residuals 0.87 and 0.99 against a bar of 0.15) where the first run
-shipped confident garbage, and sand's depth-closure and stored-F pressure
+The refusal calibration this tier bought: the replay estimators now refuse
+(residuals 0.87 and 0.99 against a bar of 0.15); the first run reported
+wrong values without warning. Sand's depth-closure and stored-F pressure
 paths refuse as they did at the no-stress tier. Assumed and stated at this
 tier: the elastic pair for plasticine and sand (their throws load it only
 inside a short impact window, and the reconstructed state there biases a
@@ -396,10 +399,10 @@ information than NCLaw uses, and the label "oracle stress" marks them.
 | material | estimator | identification quality | dataset | time | vel mean | their published | verdict |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | sand | binned-cone mu(I) curve, oracle stress | bin medians 0.5680 against a true cone of 0.5680 | 3.5e-8 | 6.9e-8 | 1.2e-8 | 2.6e-5 / 4.2e-5 / 6.5e-5 | beats all five, 605x to 84988x |
-| sand | momentum-fit mu(I) | curve relL2 0.43 to 0.54, residual 0.38 | 1.8e-3 | 2.4e-3 | 3.4e-4 | same | loses; the row bias the known-form plateau escaped |
+| sand | momentum-fit mu(I) | curve relL2 0.43 to 0.54, residual 0.38 | 1.8e-3 | 2.4e-3 | 3.4e-4 | same | loses; same impact-phase bias the known-form level reading avoided |
 | jelly | W'(I1bar) basis, small-strain projection | shear modulus 8.7 percent, volumetric 9.0 percent | 2.6e-4 | 7.3e-4 | 9.5e-5 | 2.4e-4 / 9.8e-4 / 2.4e-4 | beats four of five; dataset lost at 0.9x |
-| water | volumetric column of the hyperelastic family | lam 57367 against 57692 (0.56 percent); the deviatoric part returns zero, which is the fluid answer | 4.3e-7 | 6.6e-6 | 1.9e-7 | 2.0e-5 / 3.5e-4 / 1.9e-5 | beats all five, 47x to 5126x |
-| plasticine | hyperelastic family on the elastic state, oracle stress via stored F | shear modulus 0.16 percent, residual 0.034 | 2.7e-2 (elastic-only rollout) | 2.5e-2 | 1.6e-2 | 6.5e-5 / 1.4e-4 / 4.6e-5 | elastic function recovered; no shipped basis covers the yield, and the elastic-only rollout loses 400x, which prices that gap |
+| water | volumetric column of the hyperelastic family | lam 57367 against 57692 (0.56 percent); the deviatoric part returns zero, correct for a fluid | 4.3e-7 | 6.6e-6 | 1.9e-7 | 2.0e-5 / 3.5e-4 / 1.9e-5 | beats all five, 47x to 5126x |
+| plasticine | hyperelastic family on the elastic state, oracle stress via stored F | shear modulus 0.16 percent, residual 0.034 | 2.7e-2 (elastic-only rollout) | 2.5e-2 | 1.6e-2 | 6.5e-5 / 1.4e-4 / 4.6e-5 | elastic function recovered; no shipped basis covers the yield, and the elastic-only rollout loses 400x; the missing yield costs that factor |
 
 The plasticity gap of the first pass is now closed. A yield-surface basis
 h(p), with the yield condition sqrt(J2(dev tau)) = h(p), was trained over
@@ -429,37 +432,38 @@ learned yield surface and nothing given:
 
 Sand's yield-surface leg loses three of five scenes (0.04x to 1.3x): its
 3.6 percent slope error sits at the material's measured 4.6 percent
-budget, so sand's winning unknown-form estimator remains the binned cone
+tolerance, so sand's winning unknown-form estimator remains the binned cone
 ratio below, and the yield-surface family's value for sand is the shape
 detection, cohesionless cone against flat, from the same solve that reads
 plasticine's yield.
 
 What the row establishes. Sand's momentum-fit curve inherits the
-impact-phase bias measured on the known-form side (the ungated solve read
-38.9 degrees against 25), and the fix carries over exactly: the binned
-pointwise cone reading is the plateau estimator made curve-valued, and it
+impact-phase bias measured on the known-form side (the solve without the
+post-impact frame cut read 38.9 degrees against 25), and the fix carries
+over exactly: the binned pointwise cone reading is the level-reading
+estimator made curve-valued, and it
 recovers the constant cone to four digits across every populated inertial
-number bin. The flat-table control at the true friction scores 1.7e-11, so
-the tabulated return map reproduces their integrator and every loss in this
-table is identification, not parameterization. Water is the clean unknown
-form win: handed a family containing shear and volume responses, the fit
-returns zero shear and their exact volumetric law to half a percent, which
-is a material-class detection and a parameter recovery in one solve. Jelly
+number bin. The flat-table control at the true friction scores 1.7e-11:
+every loss in this table comes from identification error; the
+parameterization reproduces their integrator. Water: handed a family
+containing shear and volume responses, the fit returns zero shear and their
+volumetric law to half a percent; one solve detects the material class and
+recovers the parameter. Jelly
 pays 8.7 percent modulus error for the family mismatch (their corotated law
 is not in the neo-Hookean, Yeoh, Gent span) and that costs the dataset cell.
 Plasticine's first pass found a coverage gap: the elastic half of the law
 came back to 0.16 percent and no basis then shipped covered the yield.
 The learned yield surface below closed that gap the same day. The
-elastic-only rollout stays in the table as the measured price of a missing
-yield: 400x. The viscous family, run beside everything as the wrong-class
-control, is unusable everywhere (residuals 0.72 to 0.98).
+elastic-only rollout stays in the table; a missing yield costs 400x. The
+viscous family, run beside everything as the wrong-class control, is
+unusable everywhere (residuals 0.72 to 0.98).
 
 ### What the tier establishes
 
 1. Only sand's identification ever read the stress channel. Jelly's and
-   plasticine's elastic fits, plasticine's plateau yield reading and water's
-   volumetric fit are functions of x, v, F, volume and mass, and the tier
-   dump proves it mechanically rather than by inspection: with stress zeroed,
+   plasticine's elastic fits, plasticine's strain-cap yield reading and
+   water's volumetric fit are functions of x, v, F, volume and mass, and
+   the tier dump proves it by construction: with stress zeroed,
    those three materials return the full-channel parameters to every digit
    and their ten rollout cells are bitwise the full-channel cells.
 2. Their stress channel is a function of their stored deformation gradient.
@@ -470,19 +474,21 @@ control, is unusable everywhere (residuals 0.72 to 0.98).
    the full-channel 0.071 percent. This is also how NCLaw's own
    DruckerPragerPlasticity gets pressure, so the comparison stays
    like-for-like: their model reads no measured stress either.
-3. The friction number comes from the cone plateau, not from the momentum
-   solve, and that holds whatever supplies the pressure. With the
-   reconstructed pressure the momentum solve reads 37.0 degrees at relative
-   residual 0.481 and the plateau reads 24.98; with the basal-plate pressure
+3. The friction number comes from the constant level of the yield-set
+   ratio; the momentum solve is refused. That holds whatever supplies the
+   pressure. With the reconstructed pressure the momentum solve reads 37.0
+   degrees at relative residual 0.481 and the level reading gives 24.98;
+   with the basal-plate pressure
    it reads 30.53 at residual 0.630, and with the depth closure 30.72 at
    0.716. The two closures have no observable cone level to fall back on, so
    they refuse. Refusing is worth about a factor of 6e4 in the cell:
    accepting the closure estimate lands the dataset scene at 7.3e-4 where
-   the plateau lands it at 1.2e-8, and 7.3e-4 is 28x above the published
+   the level reading lands it at 1.2e-8, and 7.3e-4 is 28x above the published
    2.6e-5, so it is the one place in this comparison where a published cell
    would have been lost.
-4. Sand's quadratic budget was 4.6 percent and the closures delivered 22
-   percent. The tier cell of 1.2e-8 can grow 2167x before it reaches the
+4. Sand tolerates a 4.6 percent friction error before losing a published
+   cell; the closures delivered 22 percent. The tier cell of 1.2e-8 can
+   grow 2167x before it reaches the
    published 2.6e-5, which at quadratic growth of MSE in parameter error
    allows a 46x larger friction error than the 0.098 percent achieved, that
    is 4.6 percent. The measured growth is consistent with the model: a 225x
@@ -495,27 +501,27 @@ control, is unusable everywhere (residuals 0.72 to 0.98).
    181x.
 6. At the positions-only tier for jelly the identification is not the
    limiting error. E comes back to 1.86 percent from positions alone, but nu
-   is 12.5 percent off and, more to the point, the finite-difference frame-0
+   is 12.5 percent off, and the finite-difference frame-0
    velocity puts the correct-property rollout at 1.8e-5, which is the same
-   number as the recovered rollout. A tier that has to derive the initial
-   state pays for that first.
+   number as the recovered rollout. The seeding error from the derived
+   initial state exceeds the identification error.
 
 ### Pre-registered expectations against outcomes
 
 1. Jelly reproduces to the digit. Confirmed.
-2. Plasticine's elastic pair and plateau yield reproduce. Confirmed. The
+2. Plasticine's elastic pair and strain-cap yield reproduce. Confirmed. The
    claim that the momentum yield column would leave the published margins
    intact is FALSIFIED: the margin falls from 181x to 2.1x on the dataset
    scene, and the estimator refuses rather than shipping.
 3. Sand's reconstructed pressure and friction. Confirmed, and the closure
-   budget of 4.5 percent was right to within a tenth of a point (4.6
+   tolerance of 4.5 percent was right to within a tenth of a point (4.6
    percent measured).
 4. Water reproduces with no refusal. Confirmed, which falsifies the refusal
    expectation the positions-only reading of this tier carried.
 5. Twenty of twenty cells reproduce the full-channel table. Confirmed for
    jelly, plasticine and water, bitwise. PARTLY FALSIFIED for sand: the
    cells are a factor of 1.9 to 2.0 worse than the full-channel ones,
-   because the plateau read from the reconstructed deviator lands at 0.56741
+   because the level reading from the reconstructed deviator lands at 0.56741
    where the stored stress gives 0.56758, and rollout error grows
    quadratically in that difference. The published cells are kept with 2144x
    to 27023x to spare.
@@ -547,7 +553,7 @@ Deviations from the plan, each with its measurement. The plan's positions-only
 tier became a jelly-only secondary row after the tier was redefined as
 no-stress; it ran and is reported above. The plan expected plasticine to lose
 its yield reading with the stress channel, and it does not, because that
-reading is the strain plateau of the stored elastic F; the momentum yield
+reading is the strain cap of the stored elastic F; the momentum yield
 column asked for in the plan was built anyway and is the variant row, at 8.9
 percent. The two closure sources for sand supply pressure only, so their fits
 have no cone level and refuse on the residual rule instead of falling back;
@@ -558,8 +564,9 @@ addendum has 20.
 
 ## Plasticine, every method on one table
 
-The material with the complete story, since it is where identification is
-hardest (the elastic state hides behind plastic flow) and where NCLaw's
+The material with results from every method, since it is where
+identification is hardest (the elastic state hides behind plastic flow) and
+where NCLaw's
 coverage briefly exceeded ours. Parameter errors are against E = 300000 Pa,
 nu = 0.25, sigma_y = 5000 Pa; rollout margins are against their published
 cells on their trajectories.
@@ -578,7 +585,7 @@ out/nclaw_density_study/results.json) is the last row expanded: the full
 three-parameter least-squares chain from positions alone, with the elastic
 state rebuilt by local affine fits pushed through the return map. At their
 cloud density of one particle per cell it fails (E +32 percent, yield 2x)
-and the residual gate refuses; at 8 per cell it reads E +2.8, nu +3.4,
+and the residual check refuses; at 8 per cell it reads E +2.8, nu +3.4,
 yield +7.8 percent at residual 0.42; at 27 per cell the values above. The
 estimator that scales with density is the neighbourhood fit, which
 represents rigid rotation exactly; the engine-kernel transfer observer
@@ -616,13 +623,13 @@ identification only, rollouts excluded.
 | plasticine | scan, positions only, their density | their | elastic pair assumed | sigma_y exact | beats 6.3x to 50x | 92 s |
 | plasticine | LS, positions only, 27 per cell | ours | yes | E -1.6, nu +5.1, sigma_y +1.9 | own trajectory; residual 0.21, warned | minutes |
 | plasticine | LS known form | ours | yes | mu +0.4, lam +1.0, tau_y -0.4 | 4.6e-8 / 1.9e-8 | 5.4 s |
-| plasticine | diff-sim equal budget | ours | yes | mu +63, lam -59, tau_y -0.6 (the valley) | 3.3e-6 / 1.6e-6 | 31 min |
+| plasticine | diff-sim equal budget | ours | yes | mu +63, lam -59, tau_y -0.6 (mu-lam degeneracy) | 3.3e-6 / 1.6e-6 | 31 min |
 | plasticine | diff-sim converged | ours | yes | mu +0.02, lam +0.01 | 2.7e-12 / 1.0e-12 | 46 to 77 min |
 | sand | NCLaw network | their | no | learned nets | 2.6e-5 to 6.5e-5 (reference) | 300 epochs, A6000 |
 | sand | NCLaw sys-id, their run | their | yes | fit | 1.2e-12 on their engine | their diff-MPM |
 | sand | LS known form | their | yes | phi -0.1 (24.98 vs 25.0) | beats 2144x to 53000x | 6.7 s |
 | sand | FE binned-cone curve (oracle stress) | their | no | cone 0.5680 vs 0.5680 per bin | beats 605x to 84988x | seconds |
-| sand | FE yield-surface family (oracle stress) | their | no | cone detected, slope -3.6 | loses 3 of 5 (budget is 4.6) | seconds |
+| sand | FE yield-surface family (oracle stress) | their | no | cone detected, slope -3.6 | loses 3 of 5 (tolerance 4.6 percent) | seconds |
 | sand | scan, positions only | their | elastic pair assumed | phi 24.5 vs 25.0 | beats 1.9x to 32x | 89 s |
 | sand | LS known form | ours | yes | phi +6.5 (grid-20 bias) | 6.1e-5 / 2.1e-5 | 2.3 s |
 | sand | FE mu(I) momentum fit | ours | no | curve relL2 0.16 | 7.4e-4 / 1.9e-4 | seconds |
@@ -634,11 +641,12 @@ identification only, rollouts excluded.
 | water | LS known form | ours | yes | K -7.4 | 2.4e-4 / 5.4e-6 | 2.1 s |
 | water | diff-sim equal budget | ours | yes | K +0.0002 | 7.0e-14 / 4.8e-14 | 46 min |
 
-Reading order for the columns that matter: the convex solve holds every
+Summary of the table: the convex solve holds every
 material within a few percent in seconds and never depends on
 initialization; diff-sim converged beats it on parameter accuracy at three
-to four orders more wall time, and at equal budget falls into the
-plasticine valley (elastic pair 60 percent wrong at matched positions);
+to four orders more wall time, and at equal budget lands in the
+plasticine mu-lam degeneracy (elastic pair 60 percent wrong at matched
+positions);
 the function-encoder rows do what NCLaw's networks do, fit a function with
 no form given, and beat their published cells on sand, water, and
 plasticine outright and on jelly in four of five scenes; the positions-only
@@ -646,15 +654,16 @@ rows use strictly less information than any other row in the table,
 including both of NCLaw's, and still keep 19 of 20 published cells at their
 density plus a certified-parameter path at higher observation density.
 Refusal is a capability only our rows have: wrong-class families, biased
-pressures and unreconstructable states refuse by residual instead of
-shipping a number.
+pressures and unreconstructable states refuse on residual; no value is
+reported.
 
 
 ## Regeneration note (2026-08-24): Hencky columns for plasticine
 
-An external review found that plasticine, whose generating elasticity is
-SigmaElasticity (Hencky), was identified with the fixed-corotated stress
-columns, exact only at small strain. The assembly gained Hencky columns
+An external review found that the identification used fixed-corotated
+stress columns for plasticine, whose generating elasticity is
+SigmaElasticity (Hencky); those columns are exact only at small strain.
+The assembly gained Hencky columns
 (also linear in mu and lambda), plasticine's identification now uses them
 at both tiers, and jelly is bit-identical under the default. Regenerated
 values, both tiers identical as before since no plasticine estimator reads
@@ -664,12 +673,12 @@ on every scene, margins now 169x to 252x (were 90x to 156x). The
 before-values remain in the git history at 50d2826. The same review's other
 confirmed findings and their fixes: the metric now refuses shape mismatches
 (audit found zero contaminated cells), the mass epsilon follows the grid
-(zero impact, all scored trajectories are grid 20), the yield plateau gate
+(zero impact, all scored trajectories are grid 20), the yield-level check
 is now enforceable and refuses jelly as a negative control, the canonical
 per-material settings live in the runner, the ingest refuses ambiguous
 L-convention probes and non-uniform frame spacing, and provenance keys are
 correct after the migration. Queued: full-length kinematics with a
-stress-validity mask and configuration-hashed caches. The one-frame horizon
-effect is measured, not assumed: across all 110 recorded cells the final
-frame's error is at most 5.9 times the cell mean, so adding it as one of
-201 sampled frames shifts a cell by at most 2.9 percent, median 0.9.
+stress-validity mask and configuration-hashed caches. Across all 110
+recorded cells, the final frame's error is at most 5.9 times the cell
+mean, so adding it as one of 201 sampled frames shifts a cell by at most
+2.9 percent, median 0.9.

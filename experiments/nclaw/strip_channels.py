@@ -7,8 +7,8 @@ tier does not have:
 no_stress
     every stored kinematic channel is kept exactly (x, v, L, F, volume, mass,
     volume0), the stress channel is zeroed and ``pressure_source`` becomes
-    "absent". This is the tier of a comparison where the other engine's
-    constitutive state is not observable but its motion is. What a leg then
+    "absent". This is the tier of a comparison where only the other engine's
+    motion is observable. What a leg then
     needs instead of the stress trace is a stated pressure model, and
     ``validate_dump_schema(...).has_pressure`` is False so a leg that silently
     read the trace refuses instead.
@@ -24,7 +24,7 @@ positions_only
 
 Both derivations are the ones ``experiments/nclaw/ingest.py`` applies to a
 folder of theirs that is missing those channels; this module calls those
-functions rather than restating them, so the two paths cannot drift.
+functions, so the two paths cannot drift.
 
 CLI:
   .venv/bin/python -m experiments.nclaw.strip_channels <dump.npz> \\

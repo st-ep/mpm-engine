@@ -1,15 +1,10 @@
 """Grid-consistent (Bubnov-Galerkin) weak form for the fixed-corotated elastic pair.
 
-Why this module exists. The elastic recovery in the TrackEUCLID tree used an
-analytic radial window in the REFERENCE configuration (a squared radial bump,
-zero on a sphere surface). On a sphere that window vanishes where the material
-ends, so the free-surface and floor-contact tractions drop out and the recovery
-is accurate. On a cube the same window does not vanish on the faces, the floor
-contact traction leaks into the residual, and the recovered stiffness is biased
-by order ten percent. The fix is the same one that was load-bearing for the
-granular case (``ident/weakform/grid_assembly.py``): test on the discrete space
-the forward solver itself uses, the quadratic B-spline grid basis, and read the
-residual node by node.
+Tests on the discrete space the forward solver uses, the quadratic B-spline
+grid basis, node by node (the granular counterpart is
+``ident/weakform/grid_assembly.py``). An analytic window that does not vanish
+on a cube's faces leaks the floor-contact traction and biases the recovered
+stiffness by order ten percent; the grid basis has no such leak.
 
 The discrete MPM momentum balance is exact at every grid node the collider does
 not touch. warp-mpm deposits the internal force as
@@ -23,9 +18,8 @@ overwrites,
     sum_p V_p^0 tau_p[d,:] . grad N_i(x_p) = m_i (g - a_i)_d,
     m_i = sum_p m_p N_i(x_p).
 
-Nothing was assumed about the free surface: a node at the surface carries the
-balance just as an interior node does, because the traction MPM applies there is
-identically zero. That is what removes the need for a shape-fitted window.
+A surface node carries the balance because MPM applies zero traction there, so
+no shape-fitted window is needed.
 
 Linearity in theta. For the fixed corotated model with energy
 psi = mu ||F - R||_F^2 + (lam/2) (J - 1)^2 the Kirchhoff stress is
@@ -37,7 +31,7 @@ are read off with no approximation. In Cauchy form (the form the plan states)
 
     sigma_mu  = (2 / J) (F - R) F^T,     sigma_lam = (J - 1) I.
 
-Updated-Lagrangian pairing, stated once so it cannot drift. Volumes and stresses
+Updated-Lagrangian pairing. Volumes and stresses
 are paired as CURRENT volume with CAUCHY stress, V_p = J_p V_p^0 with sigma_p.
 That product is identically V_p^0 tau_p, the pairing the engine uses, so the two
 readings agree to the last bit and the assembler carries the reference volume
@@ -56,11 +50,11 @@ interpolation
 consistent to the temporal discretization in the same sense as
 ``grid_assembly.py`` documents for the granular case (G2P makes v_p a nodal
 interpolation, so the particle sum is a mass-weighted smoothing of the nodal
-accelerations, not a different quantity). On the granular collapse that is
+accelerations). On the granular collapse that is
 enough. On an elastic bounce it is not: the gap between the two accelerations is
 the P2G-then-G2P projection residual, it enters divided by dt, and it scales with
 the gradient of the test function, so a single node basis pays the most for it.
-Measured on the sphere drop, that route lands at 0.6 percent on E.
+On the sphere drop this route errs 0.6 percent on E.
 
 The time-weak route removes the acceleration from the data instead of
 approximating it. Integrating the balance against a test function that vanishes
@@ -79,17 +73,17 @@ tests, where the load is exact by construction.
 Scope. ``assemble_columns_timeweak`` is the law-independent engine: a caller
 hands it the volume-weighted Cauchy stress columns of any law linear in theta,
 plus an optional known stress part for the piece that is data rather than
-unknown, and the node gating, collider clearance, spatial windows and temporal
+unknown, and the node filtering, collider clearance, spatial windows and temporal
 weight are shared. The fixed-corotated pair is the first client and names the
 module; the constant-friction and EOS legs of the NCLaw comparison reuse it.
 
-Node gating, three reasons a node is dropped:
+Node filtering, three reasons a node is dropped:
   1. Collider reach. ``collide`` in the fork overwrites grid_v_out at nodes with
      dot(x_i - point, normal) < 0, so those nodes carry an unmodelled contact
      impulse. The contamination also travels: a kept node reads particles within
      1.5 dx, and those particles read nodes within a further 1.5 dx, so a margin
      of about 3 cells is needed for the interpolated load to be clean. The
-     margin is a parameter and the gate run reports its sensitivity.
+     margin is a parameter and the validation run reports its sensitivity.
   2. Support mass. A node with little mass in its support has a small, noisy
      balance and the largest particle-to-node interpolation error.
   3. Non-finite or inverted F anywhere in the support. Such a particle's stress
@@ -288,7 +282,7 @@ def _window_coefficients(
     Any linear combination of kept rows is equally exact, so combining them with
     a SMOOTH coefficient field keeps exactness and cuts that term by the ratio
     of dx to the window width. The coefficients are built to vanish on every
-    gated-out node, which is what keeps the collider traction out; the free
+    dropped node; this keeps the collider traction out. The free
     surface needs no taper, and gets one only because the kept region ends
     there too.
 
@@ -298,7 +292,7 @@ def _window_coefficients(
     from scipy import ndimage
 
     K = keep.reshape(n_grid, n_grid, n_grid)
-    dist = ndimage.distance_transform_edt(K)      # cells to the nearest gated node
+    dist = ndimage.distance_transform_edt(K)      # cells to the nearest dropped node
     u = np.clip(dist / max(taper_cells, 1e-9), 0.0, 1.0)
     W = u * u * (3.0 - 2.0 * u)                   # smoothstep, C1 at both ends
     if W.max() <= 0.0:
@@ -409,8 +403,8 @@ def _particle_validity(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Finite, non-inverted particles plus the rotation-invariant strain measure.
 
-    The SVD must not see a non-finite F (LAPACK raises), so finiteness is gated
-    first and the decomposition runs on the survivors only.
+    The SVD must not see a non-finite F (LAPACK raises), so finiteness is
+    checked first and the decomposition runs on the survivors only.
     """
     finite = np.isfinite(F_f).all(axis=(1, 2)) & np.isfinite(x_f).all(axis=1)
     if extra is not None:
@@ -436,7 +430,7 @@ def _stress_columns_for_frame(
     """Volume-weighted (P, 2, 3, 3) stress columns, invalid particles set to F = I.
 
     Particles failing ok_p still enter the node sums (the engine consumed them
-    too), but every node touching one is gated out, so the substituted identity
+    too), but every node touching one is dropped, so the substituted identity
     never reaches a surviving row.
     """
     Fs = np.where(ok_p[:, None, None], F_f, np.eye(3)[None])
@@ -497,10 +491,9 @@ def assemble_elastic_grid(
     window_taper_cells, window_modes :
         When window_taper_cells is set, the kept node rows of each frame are
         combined into window_modes smooth rows per direction instead of one row
-        per node. See ``_window_coefficients``: the combination is exact and it
-        is what makes the elastic recovery sub-percent. None emits raw node
-        rows, which is the right choice for a manufactured test where the load
-        is exact by construction.
+        per node. See ``_window_coefficients``: the combination is exact;
+        this makes the elastic recovery sub-percent. None emits raw node
+        rows, which suits a manufactured test where the load is exact.
     """
     x = np.asarray(x, dtype=float)
     F = np.asarray(F, dtype=float)
@@ -613,8 +606,8 @@ def _temporal_window(
     derivatives of the integrand vanish at both ends of the window, and the
     integrand of the momentum piece is chi' times the momentum functional. With
     chi = sin^(2m) the first 2m - 1 derivatives of chi vanish at both ends, so
-    the measured convergence is h^(2m): the plain cosine bump (m = 1) leaves an
-    order h^2 term that dominated the elastic recovery, and m = 2 removes it.
+    the convergence is h^(2m): with m = 1 an order h^2 term dominates; m = 2
+    removes it.
     """
     m = max(int(power), 1)
     s = np.arange(nw) / (nw - 1.0)
@@ -667,8 +660,8 @@ def assemble_elastic_timeweak(
 
     The temporal weight is chi(s) = sin^(2 time_power)(pi s) on s in [0, 1]
     across each window; see ``_temporal_window`` for why the power sets the
-    accuracy. Windows overlap by ``window_stride``. A node must pass the gate in
-    EVERY frame of a window, since the row sums those frames.
+    accuracy. Windows overlap by ``window_stride``. A node must pass every
+    check in every frame of a window, since the row sums those frames.
     """
     x = np.asarray(x, dtype=float)
     F = np.asarray(F, dtype=float)
@@ -715,8 +708,7 @@ def assemble_columns_timeweak(
 ) -> ElasticGridSystem:
     """Time-weak grid-consistent assembly for ANY law linear in theta.
 
-    This is the shared engine; the fixed-corotated pair was its first client and
-    gave the module its name. A caller supplies
+    This is the shared engine. A caller supplies
 
         columns_fn(frame) -> (Vsig, Vsig_known, ok_p, diag) or None
 
@@ -726,7 +718,7 @@ def assemble_columns_timeweak(
     instance) or None, ok_p the per-particle validity flags, and diag any
     per-particle scalar to report as coverage. Returning None skips the frame.
 
-    Everything downstream, the node gating, the collider clearance, the smooth
+    Everything downstream, the node filtering, the collider clearance, the smooth
     spatial windows and the temporal weight, is law independent.
     """
     x = np.asarray(x, dtype=float)
@@ -873,18 +865,16 @@ def aggregate_elastic_rows(
     node basis function N_i and one direction, so the sum over a set S of kept
     nodes is the exact balance for the test function w = sum_{i in S} N_i, and
     the sum over frames is the exact time-integrated balance. No node outside
-    the kept set enters, so the collider and validity gating still holds.
+    the kept set enters, so the collider and validity filtering still holds.
 
     Why widen. A single node basis is the narrowest test function the discrete
     space allows, which makes its row maximally sensitive to the one term the
     dump cannot supply exactly: the load carries the interpolated PARTICLE
     acceleration where the exact statement carries the nodal one, and the gap is
     the P2G-then-G2P projection residual divided by dt. That residual varies on
-    the dx and substep scales, so it averages down under a wider test function
-    while the physical balance, being exact row by row, does not move. On the
-    elastic bounce this is the difference between a percent-level and a
-    sub-percent recovery; the granular collapse never needed it because the
-    accelerations there are small and smooth.
+    the dx and substep scales, so it averages down under wider test functions
+    while the exact balance does not move. Summing kept rows is exact, so
+    widening costs nothing.
 
     node_block = 1 and frame_block = 1 return the system unchanged.
     """
@@ -959,7 +949,7 @@ def solve_elastic_grid(
     Columns can differ in magnitude by orders of magnitude on a nearly
     incompressible motion, so the normal equations are formed on
     column-normalized data and the scaling is undone afterwards. cond(A^T A) is
-    reported on the RAW columns, which is the number the gate asks for.
+    reported on the RAW columns, which is the number the gate scripts record.
     """
     A, b = system.A, system.b
     if A.shape[0] < 2:

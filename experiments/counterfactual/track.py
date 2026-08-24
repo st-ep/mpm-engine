@@ -8,10 +8,10 @@ enjoys; everything after frame 0 comes from the tracker alone.
 
 Query selection is occlusion-aware: the image is tiled, and each tile
 contributes its nearest-to-camera splat, so queries sit on the front surface
-the camera actually sees.
+the camera sees.
 
-The hidden truth is opened only AFTER tracking, to report tracking quality
-(pixel error of tracks against the projected true motion of the same
+This module opens the hidden truth only after tracking, to report tracking
+quality (pixel error of tracks against the projected true motion of the same
 splats); identification never reads it.
 
 Run from the engine root:

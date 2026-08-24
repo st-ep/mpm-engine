@@ -1,23 +1,22 @@
 """Identification without the stress channel, on NCLaw's own trajectories.
 
-The cross-engine comparison in docs/four_method_comparison.md identified from
-their trajectories with every stored channel available. This module runs the
-same identification with the stress channel excluded: the stored kinematics
+The full-channel path identifies with every stored channel. This module runs
+the same identification with the stress channel excluded: the stored kinematics
 (x, v, L, F, volume, mass) are used exactly as before, and anything the
 full-channel path read off the stress tensor is either replaced by a stated
 model or refused.
 
-What each material loses, measured on their dumps rather than assumed:
+What each material loses, measured on their dumps:
 
 jelly, water
     nothing. The elastic momentum fit reads x, v, F, volume and mass, and the
     volumetric fit reads J from F, so neither ever touched the stress channel.
     Both are rerun at this tier to confirm that.
 plasticine
-    nothing in the elastic pair, and nothing in the plateau reading of the
+    nothing in the elastic pair, and nothing in the strain-cap reading of the
     yield stress either, which takes the saturation of the deviatoric Hencky
-    strain of the stored elastic F. This module adds the estimator that does
-    not use that plateau: the momentum fit with one yield column on the
+    strain of the stored elastic F. This module adds the estimator that skips
+    the strain cap: the momentum fit with one yield column on the
     fast-shearing set, reported next to it.
 sand
     the pressure. The friction fit needs pressure as data, and the
@@ -30,9 +29,8 @@ sand
                   are held fixed and the friction angle is the fitted
                   parameter), so it is both stress-free and like-for-like with
                   their model. Their stress channel is elasticity(F) of the
-                  same F, so this source is expected to reproduce the
-                  full-channel pressure; the agreement is measured and
-                  reported, never assumed.
+                  same F. This source should reproduce the full-channel
+                  pressure; the agreement is measured and reported.
     basal_scaled  pressure measured within one grid cell of the floor, which is
                   what a force plate under the pile gives, with the
                   depth-below-surface shape scaled to match that basal level.
@@ -41,10 +39,11 @@ sand
     depth         the pure closure, density times gravity times depth below the
                   per-column free surface, from positions alone.
 
-The deviatoric stress the yield-set gate and the cone-plateau estimator need is
+The deviatoric stress the yield-set check and the cone-level estimator need is
 reconstructed from F for the hencky_F source, by the same relation and the same
 fixed elastic pair. The two closure sources supply pressure only, so their fits
-gate the yield set on kinematics and have no plateau to fall back on.
+select the yield set on kinematics alone and have no cone level to fall back
+on.
 """
 from __future__ import annotations
 
@@ -60,19 +59,16 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-SIG_FLOOR = 1.0e-6            # their preset.py clamps the singular values at 0.05
+# lower bound on singular values in the log; their preset.py clamps at 0.05,
+# this bound only guards the log
+SIG_FLOOR = 1.0e-6
 PRESSURE_SOURCES = ("hencky_F", "basal_scaled", "depth")
 
-# A variant leg always carries the value its own estimator produced, refusal or
-# not, because that is the number whose rollout cost is worth measuring. What
-# ships on a refusal is the known-class prior instead, and in this comparison
-# the prior entry IS the truth value, so a refused leg rolled out at the prior
-# would reproduce the correct-property row by construction and would say nothing
-# about the estimator.
+# A variant leg carries the value its own estimator produced, refusal or not.
 _REFUSED_LEG_NOTE = (
-    "this estimator refused; the leg rolls out the refused value to measure what "
-    "accepting it would have cost. What ships on a refusal is the known-class "
-    "prior, whose row is the correct-property row of this table.")
+    "this estimator refused; the leg rolls out the refused value to measure "
+    "its cost. A refusal falls back to the known-class prior, which here "
+    "equals the truth row.")
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +90,7 @@ def hencky_stress_parts(F: np.ndarray, E: float, nu: float
         tr tau = (2 mu + 3 lam) tr eps,   dev tau = 2 mu U diag(eps_hat) U^T,
 
     and Cauchy is tau / J. Only the elastic pair enters, and for their sand it
-    is a configured constant, not a fitted quantity.
+    is a configured constant.
     """
     from ident.weakform.elastic_grid import E_nu_to_moduli
     mu, lam = E_nu_to_moduli(float(E), float(nu))
@@ -113,8 +109,9 @@ def column_surface_pressure(x: np.ndarray, rho: float, g_z: float, cell: float
                             ) -> np.ndarray:
     """rho |g| (h - z) with h the free surface of the particle column at (x, y).
 
-    The closure this tree has used for granular collapses, here on the evolving
-    cloud: bin the particles by cell in the two horizontal directions, take the
+    The hydrostatic depth closure of the granular-collapse experiments in this
+    repository, here on the evolving cloud: bin the particles by cell in the
+    two horizontal directions, take the
     highest particle of each bin as that column's surface, and read the depth
     below it. Positions alone; no stress and no deformation gradient.
     """
@@ -143,9 +140,9 @@ def basal_scaled_pressure(x: np.ndarray, p_measured: np.ndarray, floor_z: float,
     it and nowhere else. ``p_measured`` is therefore read only inside one cell
     of the floor; the shape of the field above the band is the depth closure,
     and one scalar per frame lifts that shape onto the measured basal level. The
-    scale is a ratio of medians over the band, which is why a band that holds
-    too few particles falls back to the median scale of the frames that had
-    enough rather than inventing one.
+    scale is a ratio of medians over the band; a frame with too few band
+    particles falls back to the median scale over frames with enough band
+    particles.
     """
     x = np.asarray(x, dtype=float)
     p_depth = column_surface_pressure(x, rho, g_z, cell)
@@ -177,8 +174,7 @@ def pressure_agreement(p_model: np.ndarray, p_true: np.ndarray,
                        weight: np.ndarray | None = None) -> dict[str, float]:
     """How a pressure model compares with the stored stress trace. Diagnosis only.
 
-    Reported so the bias of a closure is a number in the record rather than an
-    expectation. Never fed back into any fit at this tier.
+    Records the closure's bias as a number. No fit at this tier reads it.
     """
     m = np.asarray(p_model, dtype=float)
     t = np.asarray(p_true, dtype=float)
@@ -200,7 +196,7 @@ def pressure_agreement(p_model: np.ndarray, p_true: np.ndarray,
 
 
 # ---------------------------------------------------------------------------
-# Yield stress from the momentum balance, without the plateau
+# Yield stress from the momentum balance, without the strain cap
 # ---------------------------------------------------------------------------
 
 def hencky_yield_parts(F: np.ndarray, mu: float, lam: float
@@ -244,8 +240,8 @@ def identify_yield_momentum(arr: dict, mu_hat: float, lam_hat: float,
     one unknown y multiplying a known direction, with the volumetric part as
     data. The set that enters is the kinematically flowing one, particles whose
     equivalent shear rate clears ``gd_min``: a particle below yield carries
-    elastic deviatoric stress this model does not describe, so it gates its
-    nodes out instead of contributing.
+    elastic deviatoric stress this model does not describe, so it invalidates
+    its nodes.
     """
     from common.conventions import equivalent_shear_rate, sym
     from experiments.nclaw.suite import _longest_run, wall_planes
@@ -395,15 +391,11 @@ def stage_identify_no_stress(material: str, dump: str | Path,
     tier = arr["meta"].extra.get("tier", "no_stress")
     t0 = time.time()
     if tier == "positions_only" and material in ("plasticine", "sand"):
-        # A plastic material's stored F is the elastic part; positions only give
-        # the total deformation, and once the material flows the two diverge.
-        # The replay estimators rebuild the elastic state from measured
-        # increments and are run here as the record of why they refuse: the
-        # fit machinery recovers the yield stress to 1.5 percent on the true
-        # hidden state, but the reconstruction carries spatially correlated
-        # direction and volume errors the residual gate catches. The parameter
-        # that ships comes from the rollout scan, with the elastic pair
-        # ASSUMED at its configured value and stated.
+        # Stored F is elastic only; positions give total deformation, and the
+        # two diverge under flow. The replay estimators run and typically
+        # refuse (reconstruction errors trip the residual check); the reported
+        # parameter comes from the rollout scan with the elastic pair assumed
+        # and stated.
         from experiments.nclaw.replay import (
             identify_friction_replay,
             identify_yield_replay,
@@ -415,7 +407,7 @@ def stage_identify_no_stress(material: str, dump: str | Path,
         assumed_note = ("elastic pair assumed at the configured value at this "
                         "tier: the throw loads it only in a short impact window "
                         "and the reconstructed state there biases the fit "
-                        "(measured on plasticine: mu +40 percent)")
+                        "(mu +40 percent on plasticine)")
         ident["assumed_parameters"] = ["E", "nu"]
         if material == "plasticine":
             ident["elastic"] = {"refused": True, "reason": assumed_note}
@@ -511,12 +503,9 @@ def stage_identify_no_stress(material: str, dump: str | Path,
             arr, window_frames=window_frames,
             form="linear" if nclaw_law else "power_law", log=log)
         if tier == "positions_only":
-            # the weak-form fit does not refuse here, so it stays primary; the
-            # scan is a variant leg. From MLS volume readings on a splash the
-            # fit lands 37.5 percent low on lam while the correct-parameter
-            # rollout already beats published on four of five scenes, so the
-            # tier's loss is identification, not the seed, and the scan
-            # measures how much of it the eval objective recovers.
+            # The weak-form fit does not refuse, so it stays primary; the scan
+            # runs as a variant leg to measure what the rollout objective
+            # recovers.
             from experiments.nclaw.rollout_scan import scan_parameter
             nu_w = float(truth["nu"])
             t1 = time.time()

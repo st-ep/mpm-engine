@@ -3,9 +3,8 @@
 The weak-form estimators refuse at the positions-only tier for the two
 plastic materials. Their momentum fits need the per-particle elastic state,
 and rebuilding that state from 1000-particle positions leaves spatially
-correlated direction and volume errors that the residual gate catches
-(the measured chain is in replay.py; the fit machinery itself recovers the
-yield stress to 1.5 percent when handed the true hidden state). What survives
+correlated direction and volume errors that the residual check catches; see
+replay.py. What survives
 at this tier is the evaluation metric itself: roll the engine at a candidate
 parameter from the tier's own frame-0 seed and score position MSE against the
 measured identify trajectory. The scan is one dimensional and never
@@ -13,9 +12,8 @@ differentiates the simulator. NCLaw's sys-id baseline optimizes the same
 objective with a differentiable MPM, so this uses the same information.
 
 Elastic parameters are ASSUMED at their configured values and stated in the
-result; only the plastic parameter is scanned. The objective is steep near
-its minimum for both materials, measured on the dataset throws: a 5 degree
-friction offset or a 2x yield offset costs a factor 25 to 45 in MSE, so a
+result; only the plastic parameter is scanned. A 5 degree friction offset or
+a 2x yield offset costs a factor 25 to 45 in MSE on the dataset throws, so a
 coarse grid plus two refinement rounds resolves the parameter.
 """
 from __future__ import annotations
@@ -32,8 +30,8 @@ def scan_parameter(material: str, identify_dump: str | Path, param: str,
 
     ``coarse`` is the blind first grid; each entry of ``refine_rounds`` is a
     list of offsets (mode "add") or factors (mode "mul") applied to the best
-    value so far. Every candidate rollout is cached under out/nclaw_cross_floor
-    /scan and re-scored on a rerun rather than re-simulated.
+    value so far. A rerun re-scores cached rollouts under out/nclaw_cross_floor
+    /scan; it does not re-simulate them.
     """
     from experiments.nclaw.suite import OUT, cloud_from_dump, nclaw_position_mse, run_scene
 

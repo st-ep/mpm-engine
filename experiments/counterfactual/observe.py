@@ -1,7 +1,7 @@
 """Stage 1 of the counterfactual loop: the observed event.
 
-Runs the shared scene at the HIDDEN truth parameters and writes what a
-camera would give and nothing more into frames/: rendered PNGs of the
+Runs the shared scene at the HIDDEN truth parameters and writes only what a
+camera would give into frames/: rendered PNGs of the
 colored splat blob under the press. Everything else that comes out of the
 simulator, the per-frame particle positions above all, goes into
 observe_truth.npz and is read only by validation; identification never

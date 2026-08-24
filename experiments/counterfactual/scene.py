@@ -63,7 +63,7 @@ def step_frame(scene, tool, plan, f: int, z_box: float) -> float:
 
 
 def camera_from_frame0(x0: np.ndarray, pad: float = 1.35) -> dict:
-    """Fixed orthographic camera: rotate, scale to pixels, done."""
+    """Fixed orthographic camera: rotate, then scale to pixels."""
     az, el = np.deg2rad(40.0), np.deg2rad(18.0)
     Rz = np.array([[np.cos(az), -np.sin(az), 0], [np.sin(az), np.cos(az), 0],
                    [0, 0, 1.0]])

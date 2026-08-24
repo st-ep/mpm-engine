@@ -7,7 +7,7 @@ the truth, rendered by the same camera that produced the observation:
                 a side-by-side video against the observed frames, the
                 validation run before any counterfactual
   deeper_press  the plate driven to 85 percent of the blob height instead of
-                60: an event that never happened
+                60 percent: an event that never happened
   offset_press  the plate shifted a third of the blob width sideways, so the
                 material squeezes out asymmetrically
   stiffer_what_if  the same press if the material had ten times the

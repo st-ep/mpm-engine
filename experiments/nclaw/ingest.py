@@ -29,13 +29,12 @@ What their files do NOT carry, and where it comes from:
       initial stress). ``stress_lag_steps`` (default 1) shifts the channel back
       into alignment and drops the last frame, which also removes the zero
       first frame. Alignment is only exact when skip_frame is 1; with a coarser
-      cadence the residual lag is recorded rather than silently absorbed.
+      cadence the ingest records the residual lag.
   the velocity gradient convention
       Their G2P accumulates new_C += 4 w inv_dx^2 outer(v, dpos), which reads
-      as C_ij = dv_i/dx_j, our L. That is not assumed here: the ingest runs the
-      acceleration-consistency probe on the ingested data and stores the
-      verdict and both residuals in the metadata, transposing C only if the
-      measurement says so.
+      as C_ij = dv_i/dx_j, our L. The ingest does not assume this: it runs the
+      acceleration-consistency probe and transposes C only if the measurement
+      says so.
 
 Degradation tiers. A folder may be missing channels (a renderer's point cloud,
 a trimmed release). Every channel is then either measured, derived, or absent,
@@ -537,10 +536,9 @@ def read_nclaw_dir(nclaw_dir: str | Path, manifest: dict | str | Path | None,
         best = min(probe["median_err_vs_L"], probe["median_err_vs_LT"])
         if best > 0.15 and not man.get("l_convention"):
             raise ManifestError(
-                f"L-convention probe is ambiguous (residuals "
-                f"{probe['median_err_vs_L']:.3f} vs {probe['median_err_vs_LT']:.3f}, "
-                "both poor); pin l_convention in the manifest instead of "
-                "letting the smaller of two bad fits decide")
+                f"both residuals are poor ({probe['median_err_vs_L']:.3f} vs "
+                f"{probe['median_err_vs_LT']:.3f}); pin l_convention in the "
+                "manifest")
         transposed = probe["median_err_vs_LT"] < probe["median_err_vs_L"]
         L = np.swapaxes(C, 2, 3) if transposed else C
         prov["L"] = "measured"
@@ -550,7 +548,7 @@ def read_nclaw_dir(nclaw_dir: str | Path, manifest: dict | str | Path | None,
         probe = l_convention_from_arrays(x, v, L, k=int(man["mls_k"]))
         probe["C_transposed_on_ingest"] = False
         probe["note"] = ("no C channel: L is the MLS fit itself, so this probe is a "
-                         "self-consistency check of the fit, not a convention test")
+                         "self-consistency check of the fit only")
         prov["L"] = "derived"
         notes.append(f"C absent: MLS velocity gradient over k={int(man['mls_k'])} "
                      "reference-frame neighbours")
@@ -665,9 +663,9 @@ def export_to_nclaw(dump_npz: str | Path, out_dir: str | Path,
     Their format exactly: one torch pickle per frame holding
     dict(x, v, C, F, stress, sections, types) in float32 in their y-up frame,
     with our L playing C and our Cauchy stress converted to the Kirchhoff
-    stress their P2G consumes. This exists so the ingest path can be validated
-    before any of their data arrives, and it is the inverse of the ingest by
-    construction, which is what the round-trip test measures.
+    stress their P2G consumes. The round-trip test exports a dump, ingests it
+    back, and checks the inverse holds. This lets the ingest path be tested
+    before any of their data arrives.
 
     ``stress_lag_steps`` reproduces the one-step offset their eval loop leaves
     in the channel: file f then carries the stress of frame f - 1, and file 0

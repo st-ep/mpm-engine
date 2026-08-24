@@ -26,7 +26,7 @@ Truth materials (their configs):
 - sand: E = 1e6, nu = 0.2, Drucker-Prager friction angle 25 deg, cohesion 0.
 - water: volumetric elasticity E = 1e5, nu = 0.3 (EOS fluid, no viscosity).
 
-## Step 0, the gate that must land first: elastic weight functions
+## Step 0, the acceptance test that comes first: elastic weight functions
 
 The current elastic recovery (sim/elastic_drop.py) uses a sphere-shaped
 radial window; on a cube it does not vanish on the faces and contact
@@ -35,7 +35,7 @@ the sphere). Fix: grid-consistent assembly. In the current configuration the
 fixed-corotated Cauchy stress stays linear in theta,
 sigma = mu * (2/J)(F - R)F^T + lambda (J - 1) I,
 so the interior-free-grid-node balance (ident/weakform/grid_assembly.py
-machinery, the Phase-1 load-bearing fix) applies with two stress columns.
+machinery, the fix Phase 1 depended on) applies with two stress columns.
 Nodes whose support touches the floor or the box walls are masked.
 Acceptance: sphere at or better than the current 0.15 percent E; cube E
 within 2 percent; lambda reported with cond(A^T A). Fallback if the grid
@@ -53,7 +53,7 @@ distances), same acceptance.
   pre-yield frames if the transient supports it, else prior-fixed and said
   so.
 - water: attempt the EOS stiffness (volumetric weak form); the pour work
-  measured water below the viscosity identifiability floor, so a partial or
+  measured water below the smallest identifiable viscosity, so a partial or
   full refusal is an acceptable and reportable outcome; the rollout then
   uses the known material class with the refused parameter at its prior.
 
@@ -81,7 +81,8 @@ advantage.
 Code: elastic grid-consistent assembly + tests in mpm_engine
 (src/ident/weakform/, branch nclaw-compare); scene generation, identify,
 rollout, scoring in video2sim/sim/nclaw_suite.py (this repo, main), artifacts
-under out/nclaw_suite/ with a results.json per material (gate discipline).
+under out/nclaw_suite/ with a results.json per material, as in the Phase-1
+acceptance scripts.
 Budget: about 16 truth sims + 16 rollouts, minutes each on the M3, plus fast
 solves; the implementer proves one material end to end (jelly), the
 orchestrator runs the rest and writes the comparison.
@@ -95,12 +96,13 @@ The pre-registered expectations above are left as written.
 replaces was a cancellation. Running sim/elastic_drop.recover on the dump in
 the tree, out/elastic_drop/truth.npz, gives E error 0.35 percent, not 0.15, and
 its per-modulus errors are mu 3.89 percent and lambda 27.5 percent. The small E
-error is those two errors cancelling in E(mu, lambda), not accuracy in either
-modulus. The gate therefore reports mu and lambda alongside E and adds a second
-acceptance test, beating the radial window on E, so a cancellation cannot pass.
+error comes from the two errors cancelling in E(mu, lambda); neither modulus is
+accurate. The acceptance test therefore reports mu and lambda alongside E and
+adds a second criterion, beating the radial window on E, so a cancellation
+cannot pass.
 
-(2) The route that shipped is the grid route in its TIME-WEAK form, not the
-instantaneous per-node balance the plan describes. Measured chain on the sphere
+(2) The route that shipped is the grid route in its time-weak form; the plan
+described the instantaneous per-node balance. Measured chain on the sphere
 dump, all with the same exact node rows:
 
   - raw per-node rows, second-order finite-difference acceleration: E 3.8 percent
@@ -109,7 +111,7 @@ dump, all with the same exact node rows:
   - time-weak load, cosine temporal window:                         E 0.42 percent
   - time-weak load, sin^4 temporal window (shipped):                E 0.09 percent
 
-The cause is measured, not assumed. The exact nodal balance carries the GRID
+The exact nodal balance carries the GRID
 acceleration; a dump carries the particle trajectory. The gap between them is
 the projection residual of P2G followed by G2P, and it enters divided by dt, so
 the narrowest test function pays the most for it. Widening the test function in
@@ -126,13 +128,13 @@ window over 26 sampled frames, 3-cell collider clearance, smooth spatial window)
   | cube   | 0.07% | 0.42%  | 3.51%      | 0.3046 (0.30) | 4.1e1 | 180 |
 
 against the radial window's sphere 0.35 / 3.89 / 27.5 and cube 13.4 / 10.9 /
-42.9. The cube gate, the point of Step 0, passes by a factor of 190 on E. All
+42.9. The cube test, Step 0's target, passes by a factor of 190 on E. All
 four acceptance tests pass, the two error bars and the two beat-the-radial-window
 tests; out/elastic_drop/grid_gate.json holds the run.
 
 The instantaneous route over the same rows measures E 0.63 percent on the sphere
 and 1.50 percent on the cube. It would pass the cube bar and fail the sphere one,
-so the time-weak route is what carries Step 0, not a convenience. Collider
+so Step 0 requires the time-weak route. Collider
 clearance is flat between two and three cells on both dumps and degrades at four
 (sphere E 0.31, cube 0.29 percent), so three cells ships, which is also the
 two-hop particle-node-particle reach the quadratic stencil predicts.
@@ -149,9 +151,9 @@ resolution 10 per axis, 1000 particles for a 0.5 m cube, which is about 1.1 of
 their 20-grid cells and below one particle per cell on a 32 grid. Our engine is
 run at pitch dx/2, eight particles per cell, giving 35937 for the cube and
 21076 for the bunny. The metric is computed between our own truth and our own
-rollout on identical clouds, so the count sets the magnitude of the number, not
-its meaning; it is one of the reasons the two columns of the comparison table
-are not a head-to-head on one simulator.
+rollout on identical clouds, so the count changes the magnitude of the MSE; the
+comparison within one engine stays valid. It is one of the reasons the two
+columns of the comparison table are not a head-to-head on one simulator.
 
 (6) NCLaw's geometry-generalization column pairs a DIFFERENT held-out mesh with
 each material: jelly with armadillo, plasticine with bunny, sand with blub,
@@ -164,7 +166,7 @@ experiments/configs/env/blob/material/plasticity/von_mises_plasticine.yaml sets
 E 3e5, nu 0.25, sigma_y 5e3. Their von_mises.yaml declares
 cls: VonMisesPlasticity with E, nu, sigma_y required.
 
-(8) The sand friction mapping is derived from the fork, not assumed. warp-mpm's
+(8) The sand friction mapping is derived from the fork. warp-mpm's
 set_parameters_dict stores alpha = sqrt(2/3) 2 sin phi / (3 - sin phi) and
 sand_return_mapping yields when ||dev eps|| + (3 lam + 2 mu)/(2 mu) tr(eps)
 alpha > 0. With Hencky elasticity, ||dev tau|| = 2 mu ||dev eps|| and
@@ -181,11 +183,11 @@ mu = 0.5679.
 (9) The Step 0 module hosts a law-independent core rather than an elastic-only
 one. assemble_columns_timeweak takes the volume-weighted Cauchy stress columns
 of any law linear in theta plus an optional known stress part, so the sand
-constant-friction leg and the water EOS leg reuse the same node gating, collider
+constant-friction leg and the water EOS leg reuse the same node selection, collider
 clearance, spatial windows and temporal weight instead of copying them. The
 fixed-corotated pair is the first client and still names the module.
 
-(10) The published numbers, extracted rather than assumed. NCLaw's own method's
+(10) The published numbers, extracted from their tables. NCLaw's own method's
 row, position MSE in squared metres on their 1.0 m box: reconstruction from
 their Table 1 (page 5), the three generalization axes from Table 2 (page 7),
 tasks (a) longer horizon, (b) initial velocity, (c) geometry.
@@ -201,8 +203,8 @@ per-table Overall columns do not recompute from the cells, so only per-cell
 values are used. Their strongest baseline beats them on jelly reconstruction
 (the neural row, 1.2e-5); their labelled and system-identification oracles sit
 below the rule in the same tables and are excluded from their own shading, so
-they are not comparison targets. The metric is verified in their code, not
-inferred: nclaw/utils.py:86 diff_mse is a torch mse_loss on absolute positions,
+they are not comparison targets. Their code defines the metric:
+nclaw/utils.py:86 diff_mse is a torch mse_loss on absolute positions,
 the mean over particles AND all three coordinates, averaged over every fifth
 saved frame.
 
@@ -219,14 +221,14 @@ the throw from vel/preset to vel/mild, linear [1.0, -1.5, -1.5] and angular
 horizon and the preset throw. The report carries this as a line of its own so
 the two columns are not read as measuring the same thing.
 
-(12) The sand validity mask was wrong on the first pass and the fix is a
-measurement, not a taste. Marking every particle at or below zero pressure
+(12) The sand validity mask was wrong on the first pass; a measurement forced
+the fix. Marking every particle at or below zero pressure
 INVALID left no surviving node at any threshold from 0.75 to 1.0, because about
 a quarter of a tumbling cohesionless cube sits at or below zero pressure at any
-instant. Those particles are not invalid, they are stress free:
+instant. Those particles carry zero stress:
 sand_return_mapping sets F_elastic = U V^T when tr eps >= 0, measured here as
 ||sigma|| of order 0.4 Pa against 1e4 Pa in the bulk. Treating them as modelled
-contributors of zero stress, and gating only on positive-pressure particles
+contributors of zero stress, and excluding only positive-pressure particles
 below yield (measured fraction: zero, every positive-pressure particle in this
 throw is shearing), took the recovery from -32 percent to -1.0 percent on a
 30-frame probe: mu_c 0.5622 against the truth 0.5680, friction angle 24.76
@@ -256,9 +258,9 @@ alone: mu 4.1697e4 against 4.1667e4 (+0.07 percent), lambda 2.7355e4 against
 against 0.2, from 36 rows with cond(A^T A) 30.5 and relative residual 0.0066.
 Rollout at the recovered law, NCLaw's metric: cube reconstruction 1.95e-6,
 bunny generalization 1.30e-7, against their published jelly 2.4e-4 and 4.1e-4.
-The generalization number being lower than the reconstruction number is not a
-mistake: the cube throw is the more strongly excited scene, and the bunny at
-21076 particles deforms less.
+The generalization number being lower than the reconstruction number follows
+from excitation: the cube throw deforms more, and the bunny at 21076 particles
+deforms less.
 
 ## Orchestrator finding: sand frame-selection bias (2026-08-20)
 
@@ -268,10 +270,11 @@ The suite's first full sand run recovered phi = 21.97 deg against truth 25
 states: the flow direction is read from D, which is not coaxial with the
 elastic strain during the collisional impact frames, and the default frame
 selection (longest shearing run) starts there. Measured sweep of a
-post-impact gate, frames after the kinetic energy decays below a fraction
+post-impact frame cutoff, frames after the kinetic energy decays below a fraction
 of its peak: frac 0.5 gives phi 24.66 (residual 0.083), 0.2 gives 25.22
 (0.042), 0.1 gives 25.06 (0.025); below 0.1 the ten-frame window refuses.
-The shipped gate uses 0.1 with a relax ladder to 0.2 and 0.5, records the
+The shipped cutoff uses 0.1, relaxing to 0.2 then 0.5 when the window
+refuses, records the
 fraction used, and reads phi = 25.19 (residual 0.044, sd 0.003) through the
 real code path. Sand rollouts regenerated at the corrected friction.
 
@@ -291,16 +294,17 @@ p5 reconstruction, Table 2 p7 column (c) geometry). Both in box MSE, m^2.
 
 Recovered parameters, from the cube trajectory alone: jelly E -0.09
 percent, nu 0.198 (0.2); plasticine E +0.03 percent, nu 0.2507 (0.25),
-yield -0.03 percent; sand phi 25.19 (25) after the post-impact gate; water
+yield -0.03 percent; sand phi 25.19 (25) after the post-impact frame cutoff;
+water
 bulk +0.04 percent. Secondary preset-throw generalization cells (geometry
 isolated) are in the per-material reports; sand blub under the preset throw
-is a scene-integrity failure on both engines' terms and is reported as
-such, not as a number.
+is a scene-integrity failure on both engines' terms and is reported as a
+failure; no MSE is quoted.
 
-Pre-registration scorecard: jelly cube gate PASS (0.09 vs 2 percent);
+Pre-registration scorecard: jelly cube test PASS (0.09 vs 2 percent);
 plasticine PASS; the sand expectation transfers from the old mu(I) test to
-its DP analog and passes (phi within 1 percent); water FALSIFIED in the
-good direction, no refusal, because the throw realizes 9.5 percent
+its DP analog and passes (phi within 1 percent); water FALSIFIED: no refusal
+occurred, because the throw realizes 9.5 percent
 volumetric strain where the pour had none; the sand-generalization
 expectation PASSES; the no-claim on reconstruction turned out conservative,
 ours is lower on every material.
@@ -311,10 +315,9 @@ simulator; (ii) our cells use known law FORMS, so the fair row in their own
 Table 1 is the sys-id ORACLE (1.7e-8 to 5.8e-10 reconstruction), which they
 label an upper bound requiring inaccessible knowledge. Our numbers sit in
 that oracle band while using only the same observable trajectory their
-network trains on. That is the point of the comparison: convex weak-form
-identification makes the sys-id oracle accessible without a differentiable
-simulator, and the unknown-form case is what the function-encoder basis is
-for, separately measured.
+network trains on. Convex weak-form identification reaches the sys-id
+oracle band without a differentiable simulator; the function-encoder basis
+covers the unknown-form case, measured in the FE section.
 
 ## Blender comparison renders (2026-08-20)
 
@@ -364,8 +367,7 @@ Their eval and dataset scripts save one torch pickle per saved step,
 state_root/0000.pt, 0001.pt, ..., each a dict(x, v, C, F, stress, sections,
 types): x and v of shape (N, 3), C, F and stress of shape (N, 3, 3), float32,
 their y-up frame, positions on the unit box (experiments/eval.py lines 104 and
-128). Four facts about that format matter and none of them is guessable from the
-files:
+128). The files do not carry the following four facts:
 
 1. Volume and density are absent. Their MPMInitData sets one scalar volume per
    group: prod(size) / N for a uniformly seeded cube, mesh.volume / N *
@@ -383,7 +385,7 @@ files:
    when skip_frame is 1; a coarser cadence leaves a sub-frame lag that is
    recorded rather than absorbed.
 4. Their G2P accumulates new_C += 4 w inv_dx^2 outer(v, dpos), which reads as
-   C_ij = dv_i/dx_j, our L. That is not assumed. The ingest runs the
+   C_ij = dv_i/dx_j, our L. The ingest verifies this: it runs the
    acceleration-consistency probe on the ingested arrays and transposes C only
    if the measurement says so, storing the verdict and both residuals in the
    dump metadata.
@@ -446,7 +448,7 @@ against L and 1.995 against L^T; sand frame 12, 0.0019 and 1.907.
 Kinematics-only tier on the same jelly dump, positions in and nothing else: E
 1.0122e5 against the truth 1e5, 1.2 percent high, nu 0.1957, against 0.09
 percent low for the measured-channel path. That is the price of deriving v, L
-and F from x alone at 24 neighbours, measured rather than assumed. The sand leg
+and F from x alone at 24 neighbours. The sand leg
 on the same stripped folder refuses the friction angle for want of the oracle
 pressure and falls back to its prior.
 
@@ -494,8 +496,8 @@ and the validation that needs no NCLaw data at all is
 table above. Their trajectory against our rollout carries the identification
 error AND the difference between the two integrators at their grid and time
 step, where the suite's own cells carry the identification error alone. The
-cross stage writes that caveat into every results file rather than leaving the
-number to be read as a like-for-like.
+cross stage writes that caveat into every results file, so no reader takes the
+number as like-for-like.
 
 (17) The suite's asset lookup moved from import time to first use. Resolving
 their mesh folder while importing the suite made the ingest path, which needs
@@ -509,13 +511,14 @@ write outside the grid: on this machine a bus error, not an exception.
 _wave_speed refuses E <= 0 and nu outside (-1, 0.5) with a message naming the
 pair.
 
-(19) The pre-registered 1e-9 theta agreement holds, and the reason it holds for
-sand is worth recording rather than assuming: the stress channel is the one
+(19) The pre-registered 1e-9 theta agreement holds; the reason it holds for
+sand is recorded here: the stress channel is the one
 lossy link, at 6e-8 relative, but its error is uncorrelated across the 35937
 particles and the weak form sums them, so the friction angle moves by 2.6e-11
 and not by 6e-8.
 
-(20) The cross-engine floor was almost entirely the boundary condition, and the
+(20) The cross-engine truth-replay error came almost entirely from the boundary
+condition, and the
 engine now offers their semantics as a first-class option. Truth-parameter
 rollouts on their plasticine trajectories sat at 1.067e-3 position MSE with our
 six collider slip planes. `MPM_Simulator_WARP.set_grid_semantics` adds five
@@ -538,10 +541,10 @@ set:
   | full without empty-node gravity        | 7.841e-12 |             |
   | full without particle clip             | 7.841e-12 |             |
 
-Read in the order that matters: the wall semantics are worth 141x on their own,
+In order of effect size: the wall semantics are worth 141x on their own,
 the MLS transfer another 1967x once the walls are right and nothing at all
 before that, and the eps-softened mass division a further 490x. Two of the five
-are inert here and the reason is structural, not a small effect. Empty-node
+are inert here; the reason is structural. Empty-node
 gravity is unreachable through g2p: every node in a particle's own stencil
 receives that particle's mass, so no node a particle gathers from is ever empty,
 and NCLaw's `else` branch is effectively dead code. The particle clip never
@@ -557,8 +560,8 @@ yet checked. Their sand config uses `sigma_sand` elasticity, which is in the
 Hencky family, while our suite maps sand to the Drucker-Prager material whose
 elastic predictor has not been read against theirs term by term. Plasticine's
 analogous mismatch (fixed corotated where their config says Hencky) moved the
-floor by 1 percent, 1.078e-3 to 1.067e-3, so the expectation is that this is
-small; it is recorded as unchecked rather than assumed.
+truth-replay error by 1 percent, 1.078e-3 to 1.067e-3, so the expectation is
+that this is small; it is recorded as unchecked.
 
 (22) Water's law is not a reparameterization of ours, and that was the whole
 water gap. Their water is VolumeElasticity in mode taichi paired with
@@ -593,13 +596,15 @@ and the two branch structures coincide except at the measure-zero boundary
 delta_gamma = 0 with trace exactly 0; and our kirchoff_stress_drucker_prager,
 U diag((2 mu log sig_i + lam sum log sig)/sig_i) V^T F^T, reduces algebraically
 to U diag(2 mu eps_i + lam tr eps) U^T, which is their SigmaElasticity exactly.
-Nothing in the mapping needed fixing. The floor confirms it: with their grid
-semantics and their dt, all five sand floors sit at 2.0e-11 to 5.4e-11.
+Nothing in the mapping needed fixing. The truth-replay error confirms the
+mapping: with their grid semantics and their dt, all five sand truth-replay
+errors sit at 2.0e-11 to 5.4e-11.
 
 Two things were wrong and only one of them is the engine's. The time step was:
 our CFL picks two substeps per frame at sand's 33 m/s wave speed where they take
 one, and their trajectory is their discrete solution at their dt, so
-subdividing it moved us away from the reference and held the floor at 2.0e-4.
+subdividing it moved us away from the reference and held the truth-replay
+error at 2.0e-4.
 --substeps=1 removes that, a factor of 1e7. The other is the friction
 identification, which returns 38.91 degrees against their 25. That is not a
 convention error: on their own sand_dataset stress channel the pointwise
@@ -611,15 +616,15 @@ weak-form leg fits ONE global friction through a momentum balance over a body
 that is only partly at yield, and a projection of dev(tau) onto the column
 p (2 D / |gamma_dot|_eps) over all shearing particles gives 0.355, not 0.568:
 the elastic interior pulls one way and the momentum weighting the other. The
-recommended next step is a yield-set row gate, the same plateau logic
-identify_yield already uses, not a change to the engine or the mapping.
+recommended next step is a yield-set row filter, reusing identify_yield's
+level detection; the engine and the mapping need no change.
 
 (24) Five-scene recovered-theta cells against their published plasticine, water
 and sand columns, with their grid semantics, their constitutive pair and their
 dt. Every number is our engine rolled from their frame-0 cloud and scored in
 their metric:
 
-  | material   | cell    | floor    | recovered | published | beats |
+  | material   | cell    | truth-replay error | recovered | published | beats |
   | plasticine | dataset | 7.84e-12 | 7.21e-7   | 6.5e-5    | yes, 90x  |
   | plasticine | time    | 1.45e-11 | 9.00e-7   | 1.4e-4    | yes, 156x |
   | plasticine | vel     | 5.34e-12 | 3.99e-7   | 4.6e-5    | yes, 115x |
@@ -630,6 +635,7 @@ their metric:
   | sand       | time    | 5.00e-11 | 8.20e-3   | 4.2e-5    | no        |
   | sand       | vel     | 3.08e-11 | 1.18e-3   | 6.5e-5    | no        |
 
-The floors say the engine reproduces their integrator to eleven digits on all
-three materials. Where a cell fails it fails on identification alone, and for
+The truth-replay errors show the engine reproduces their integrator to eleven
+digits on all three materials. Where a cell fails it fails on identification
+alone, and for
 sand deviation (23) says which part.

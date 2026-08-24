@@ -2,8 +2,7 @@
 
 The positions-only chain is exact except for one link. Velocities are exact
 (both engines advect x by dt v). The elastic F is exact given the affine
-increments C (replaying their stored C reproduced their stored F to 1e-5 and
-the least-squares fit then recovered the yield to 1.3 percent). The lossy
+increments C (replaying stored C reproduces stored F to 1e-5). The lossy
 link is estimating C from positions, and its error is set by observation
 density: the grid velocity field is only recoverable where several particles
 fall in each cell. NCLaw's clouds have one per cell and the compounded
@@ -18,14 +17,14 @@ difference is the step velocity. The chain then runs from positions alone:
             -> affine increments C (engine-kernel observer, replay.py)
             -> elastic F (return-map replay, self-consistent in tau_y)
             -> (mu, lambda) and tau_y by the convex least-squares momentum
-               fit; nothing assumed, nothing scanned, nothing differentiated
+               fit; no assumed parameters, no rollout scan, no differentiation
 
 and is scored against the dump's own stored channels: per-step C error where
 comparable, end-to-end F error, recovered parameters against truth, fit
 residuals, and a rollout at the recovered parameters seeded from frame 1
 (whose velocity the tier knows exactly), scored by position MSE against the
-truth trajectory. Same engine on both sides by design: the question is
-observability at a given density, not engine transfer.
+truth trajectory. Same engine on both sides, so the study isolates
+observability at a given density.
 
 Run from the engine root (about half an hour for the dense case):
 
@@ -75,13 +74,12 @@ def chain(ppc: int, increment_estimator: str = "knn", log=print) -> dict:
     velocity gradient back (replay.grid_affine_increments); its error scales
     with the whole affine field, and the throw's rigid rotation is 6 to 24
     times the strain rate, so a 3 percent operator error is a 22 to 60
-    percent strain-rate error at any density (measured on the 8 ppc dump).
+    percent strain-rate error at any density.
     "knn" fits, for each particle, the linear map that best carries its 16
     nearest neighbours from one frame to the next
     (replay.incremental_gradients); a linear fit reproduces rigid rotation
     exactly, so its error scales with the strain variation inside the
-    neighbourhood, which shrinks with density. That is why the neighbourhood
-    fit is the default and why particle density matters for it.
+    neighbourhood, which shrinks with density.
     """
     dump = DUMPS / f"plasticine_ppc{ppc}_truth.npz"
     if not dump.exists():

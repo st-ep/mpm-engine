@@ -5,11 +5,9 @@ the return map overwrites F every step. Positions can only give the total
 deformation, and once the material flows the two diverge. Measured on NCLaw's
 plasticine dataset throw: the stored elastic deviatoric strain caps at 0.021
 while the total strain reaches 1.7 by the last frame. An estimator that reads
-sigma(F_total) is reading a state the constitutive law never sees, which is
-how the first positions-only plasticine identification failed (E ten times
-low, yield twelve times high, no refusal).
+sigma(F_total) is reading a state the constitutive law never sees.
 
-The repair rebuilds the elastic state from the measured motion. Between
+This module rebuilds the elastic state from the measured motion. Between
 consecutive frames the local deformation increment is a moving least squares
 fit over current-frame neighbours, which stays well conditioned at any
 accumulated deformation (the reference-frame fit the tier dump carries does
@@ -19,10 +17,8 @@ map,
     F_e[n+1] = project(F_incr[n] @ F_e[n]),
 
 per-particle algebra on measured kinematics: no simulator, no momentum time
-stepping, nothing differentiated. Validated on the plasticine dataset
-trajectory against the stored elastic F: deviatoric strain percentiles match
-to the third decimal through the active flow phase (frames 0 to 300); drift
-appears only after the material settles.
+stepping, nothing differentiated. On the plasticine dataset the replayed
+strain matches the stored elastic F through the flow phase.
 
 The return maps mirror NCLaw's own (nclaw/material/preset.py), the same
 formulas tests/test_composed_material.py verifies the engine against.
@@ -57,8 +53,8 @@ def incremental_gradients(x: np.ndarray, k: int = 16, ridge: float = 1.0e-10
     For each particle at frame n, the k nearest neighbours AT FRAME n define a
     local frame-to-frame map x[n] -> x[n+1]; the least squares gradient of that
     map is F_incr with F_total[n+1] = F_incr[n] @ F_total[n]. Current-frame
-    neighbourhoods keep the fit local no matter how far the material has
-    flowed, which is what the reference-frame MLS in the tier dump loses.
+    neighbourhoods keep the fit local; the reference-frame MLS in the tier
+    dump loses locality at large flow.
     """
     from scipy.spatial import cKDTree
     x = np.asarray(x, dtype=np.float64)
@@ -88,11 +84,10 @@ def grid_affine_increments(x: np.ndarray, dt: float, n_grid: int,
     F[n+1] = (I + dt C[n]) F[n] with C[n] this function's entry n, which
     pairs the increment with the step it advanced, x[n] -> x[n+1].
 
-    Accuracy is set by observation density, not by the operator: the grid
-    field is recoverable only where several particles fall in a cell.
-    Measured on the plasticine throw: per-step relative error 9 to 16
-    percent at one particle per cell (NCLaw's clouds), where the compounded
-    replay fails the momentum fit's residual gate.
+    Observation density sets the accuracy: the grid field is recoverable
+    only where several particles fall in a cell. At one particle per cell
+    the per-step relative error is 9 to 16 percent and the compounded
+    replay fails the momentum fit's residual check.
     """
     x = np.asarray(x, dtype=np.float64)
     T, N = x.shape[:2]
@@ -193,8 +188,8 @@ def replay_elastic(Fincr: np.ndarray, project) -> tuple[np.ndarray, np.ndarray]:
     """F_e[n+1] = project(F_incr[n] @ F_e[n]) from identity, plus flow flags.
 
     ``project`` maps a batch of gradients to (projected batch, mask, ...); the
-    first mask names the particles the projection actually moved that step,
-    which is the at-yield set of the momentum fit. Shapes: (T, N, 3, 3) and
+    first mask names the particles the projection moved that step, which is
+    the at-yield set of the momentum fit. Shapes: (T, N, 3, 3) and
     (T, N) with frame 0 all-identity and no flow.
     """
     T1, N = Fincr.shape[:2]
