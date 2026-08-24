@@ -732,14 +732,7 @@ def identify_yield(arr: dict, mu_hat: float, plateau_pct: float = 99.9,
         return {"refused": True, "reason": "no finite deformation gradient"}
     cap = float(np.percentile(vals, plateau_pct))
     at_cap = float((vals >= 0.98 * cap).mean())
-    # a capped distribution has an atom at its maximum; a smooth one does not.
-    # The old gate (at_cap < 1e-3) was vacuous: about 0.1 percent of samples
-    # sit above the 99.9th percentile by construction, and widening the band
-    # only raises the fraction, so nothing could ever refuse. The gate now
-    # requires real mass in the top band AND that the band be denser than the
-    # band just below it, which a smooth tail cannot satisfy (uniform gives
-    # about 2 percent in each band, ratio 1; the plasticine cap gives tens of
-    # percent against about one, measured).
+    # a cap concentrates mass at the maximum
     below = float(((vals >= 0.94 * cap) & (vals < 0.96 * cap)).mean())
     concentration = at_cap / max(below, 1e-6)
     res = {"eps_y": cap, "plateau_fraction": at_cap,
