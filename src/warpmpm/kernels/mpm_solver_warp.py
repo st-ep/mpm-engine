@@ -517,11 +517,6 @@ class MPM_Simulator_WARP:
         self.grid_launch_box = None
         self._prev_grid_box = None
         self.restrict_grid = True
-        # per-block particle tables for the tiled P2G scatter, set per control tick
-        # by the wrapper (core.Solver.step) when tiled_p2g is on; None = the plain
-        # per-particle scatter. Keys: n (block count), start, count (int arrays),
-        # lo (vec3i array of window node origins).
-        self.tiled_p2g_blocks = None
         # per-phase ScopedTimers force a device sync each substep, which is pure
         # instrumentation (stream ordering guarantees kernel correctness; host reads
         # synchronize implicitly). profile=True restores the synced timers and fills
@@ -1262,7 +1257,6 @@ class MPM_Simulator_WARP:
             and str(device).startswith("cuda")
             and not self.pre_p2g_operations
             and not self.particle_velocity_modifiers
-            and self.tiled_p2g_blocks is None  # block tables change shape per tick
         )
         if use_graph:
             st = self.mpm_state
@@ -1373,24 +1367,12 @@ class MPM_Simulator_WARP:
                 print=False,
                 dict=self.time_profile,
             ):
-                tb = self.tiled_p2g_blocks
-                if tb is not None and tb["n"] > 0:
-                    wp.launch_tiled(
-                        kernel=p2g_tiled_scatter,
-                        dim=[tb["n"]],
-                        inputs=[self.mpm_state, self.mpm_model, dt,
-                                tb["start"], tb["count"], tb["lo"],
-                                self.mpm_state.grid_v_in, self.mpm_state.grid_m],
-                        block_dim=TILE_P2G_BLOCK_DIM,
-                        device=device,
-                    )
-                else:
-                    wp.launch(
-                        kernel=p2g_apic_with_stress,
-                        dim=self.n_particles,
-                        inputs=[self.mpm_state, self.mpm_model, dt],
-                        device=device,
-                    )  # apply p2g'
+                wp.launch(
+                    kernel=p2g_apic_with_stress,
+                    dim=self.n_particles,
+                    inputs=[self.mpm_state, self.mpm_model, dt],
+                    device=device,
+                )  # apply p2g'
 
             # grid update
             with wp.ScopedTimer(

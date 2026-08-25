@@ -202,44 +202,24 @@ K=8). It stays off by default, also because sorting changes particle index ident
 and would break index-paired trajectory dumps. It remains the prerequisite for a
 shared-memory P2G, where bucket order is required rather than merely helpful.
 
-### Tiled P2G scatter (wp.tile)
+### Tiled P2G scatter: measured and removed
 
-`tiled_p2g=True` replaces the split path's per-particle global-atomic scatter with
-claymore's shared-memory tier, expressed in warp 1.14's tile primitives: one thread
-block per 4^3 particle block (the block-sort key granularity), deposits accumulated
-in a shared vec4 tile (momentum xyz + mass) over the block's 6^3 node window via
-`wp.tile_scatter_add`, then two `wp.tile_atomic_add` writebacks whose global atomics
-absorb the one-node halo overlap between neighboring windows. The shared tile is
-216 nodes x 16 bytes = 3.4 KB per block. Per-block particle tables are host-built
-from the sort keys on every sort tick; between rebuilds a particle that drifted out
-of its window deposits through plain global atomics inside the same kernel, so
-stale tables stay correct. The path requires `sort_interval >= 1` and `fused=False`
-and refuses sparse mode, periodic x, and CDF colliders. Off (the default) leaves
-every launch bitwise identical to before the flag existed.
+A claymore-style shared-memory P2G scatter was built with warp 1.14's tile
+primitives, verified to 2.7e-7 node error against the plain scatter, and
+measured on both targets (2026-08-25). On the M-series CPU it is 2.6x
+faster on the p2g phase (tile cache locality). On the GH200 it LOSES,
+0.63x at 100k particles and 0.88 to 0.93x at 500k: Hopper's L2-native
+floating-point atomics absorb the plain scatter (2.7 million atomic adds
+in 0.21 ms per substep), so the contention that made claymore's tier worth
+3 to 10x on RTX-2080-era hardware is no longer the bottleneck, and the
+tile path pays a block barrier per scatter call for nothing. Production
+uses the fused path, which the tiled kernel cannot serve.
 
-`tests/test_tiled_p2g.py` holds the two scatters equal: max node error 2.7e-7
-relative on momentum and mass (APIC and MLS+APIC), total scattered mass and
-momentum within 1.3e-8 relative of the particle sums, and a staleness test that
-routes drifted particles through the fallback. `benchmarks/bench_tiled_p2g.py`
-measures the p2g phase; on the M-series CPU at 128^3 the tiled kernel is 2.6x
-faster (14.4 vs 38.0 ms per substep at 100k particles, 73.5 vs 189.6 ms at
-500k) from tile locality alone, one lane per block.
-
-Measured on the GH200 (2026-08-25, two runs): the tiled path LOSES on this
-GPU, 0.63x at 100k particles and 0.88 to 0.93x at 500k (plain 0.21 and 0.94
-ms per substep against tiled 0.34 and 1.08). Hopper's L2-native
-floating-point atomics absorb the plain scatter (2.7 million atomic adds in
-0.21 ms), so the contention that made claymore's shared-memory tier worth 3
-to 10x on RTX-2080-era hardware is no longer the bottleneck, while the tile
-path still pays a block barrier per scatter call. The 100k-to-500k trend
-tracks occupancy (331 blocks fill a sixth of the GPU); a 2M-particle run
-would close whether a crossover exists at scale. Verdict: `tiled_p2g` is a
-CPU-side accelerator; leave it off on CUDA.
-
-One warp 1.14 limitation: `wp.tile_atomic_add` rejects an array reached through a
-struct member ("'Reference' object has no attribute 'dtype'"), so the kernel takes
-`grid_v_in` and `grid_m` as direct parameters aliasing the state struct's arrays.
-
+The implementation, its tests, and the benchmark live on the
+`wp-tile-scatter` branch (commit 9439972). It is removed from this branch
+so its kernel does not enlarge the compiled module for a path nobody runs.
+The claymore shared-memory item is closed as hardware-obsolete on Hopper,
+not as an unported gap.
 ## Claymore: what was ported and what was left
 
 The reference is [Claymore](https://github.com/penn-graphics-research/claymore) (MIT),
@@ -252,9 +232,8 @@ parts of the architecture are:
 2. Block-centric launches with shared-memory arenas: one CUDA block per active 4^3
    grid block, cooperative load of the block-plus-halo arena, block-local atomics,
    one global writeback. This is what removes global atomic contention in P2G, and
-   it is where their reported 3 to 10x P2G speedups come from. Ported for the P2G
-   scatter as the opt-in `tiled_p2g` path (warp 1.14 wp.tile; see above); the
-   G2P gather and the fused kernel still use per-particle loads.
+   it is where their reported 3 to 10x P2G speedups come from. Not portable to warp
+   kernels as written (needs wp.tile or native CUDA); deferred.
 3. Per-block particle buckets rebuilt every step. Ported in relaxed form as the
    periodic block sort; our global-atomic kernels only want locality, so every K
    ticks suffices.
@@ -265,8 +244,8 @@ parts of the architecture are:
    per-particle material id inside one fat kernel; if register pressure ever hurts
    the fused kernel, splitting by material family is the fallback.
 
-Idea 4 remains a follow-up to pair with the tiled scatter, worth doing only if a
-GH200 profile shows the tiled P2G bound by particle loads rather than atomics.
+Ideas 2 and 4 belong together as one CUDA-native follow-up, worth doing only if a
+profile shows P2G dominant after the implicit-solver work below.
 
 For a same-GPU head-to-head, `benchmarks/bench_vs_claymore.py` runs a dam break
 whose work profile (particle count, grid resolution, substep count) is set to

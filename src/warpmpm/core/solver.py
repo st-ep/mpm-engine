@@ -79,13 +79,6 @@ class Solver:
     # Sorting changes particle index identity. Keep this at 0 when dumps pair frames by
     # particle index, including trajectory-based identification.
     sort_interval: int = 0
-    # claymore-style shared-memory P2G scatter (wp.tile): one thread block per 4^3
-    # particle block accumulates deposits in a shared tile and writes the block's 6^3
-    # node window back with two tile atomics. Requires sort_interval >= 1 (the block
-    # tables come from the sort keys) and fused=False (the fused kernel scatters
-    # inside g2p_stress_p2g). Excludes sparse mode, periodic_x, and CDF colliders.
-    # Off (the default) leaves every launch bitwise identical to before the flag.
-    tiled_p2g: bool = False
     # Per-phase profiling records zero/stress/p2g/grid-update/BC/g2p timings. It synchronizes
     # around each phase and forces live launches, making the run slower. Read the accumulated
     # timings with profile_report().
@@ -436,16 +429,8 @@ class Solver:
     def step(self, dt: float, substeps: int = 1) -> Solver:
         if self._tick % max(1, self.guard_interval) == 0:
             self._update_grid_box(dt, substeps)
-        sorted_this_tick = False
         if self.sort_interval and self._tick % self.sort_interval == 0:
             self._sort_particles()
-            sorted_this_tick = True
-        if self.tiled_p2g:
-            self._check_tiled_p2g()
-            if sorted_this_tick or self._sim.tiled_p2g_blocks is None:
-                self._build_p2g_block_tables()
-        elif self._sim.tiled_p2g_blocks is not None:
-            self._sim.tiled_p2g_blocks = None
         if self.sparse:
             self._sim.rebuild_active_blocks(self.device)
         self._sim.profile = self.profile
@@ -465,52 +450,6 @@ class Solver:
                 self._sim.p2g2p(self._step, dt, device=self.device)
                 self._step += 1
         return self
-
-    def _check_tiled_p2g(self) -> None:
-        """Reject solver configurations the tiled scatter does not cover."""
-        if not self.sort_interval:
-            raise RuntimeError(
-                "tiled_p2g requires the block sort: set sort_interval >= 1 "
-                "(the per-block particle tables come from the sort keys)")
-        if self.fused:
-            raise RuntimeError(
-                "tiled_p2g requires fused=False: the fused pipeline scatters "
-                "inside g2p_stress_p2g, which this pass does not replace")
-        if self.sparse:
-            raise RuntimeError("tiled_p2g does not support sparse mode")
-        if self.periodic_x:
-            raise RuntimeError(
-                "tiled_p2g does not support periodic_x: the node-index wrap "
-                "breaks the block window")
-        if self._sim.mpm_model.n_cdf > 0:
-            raise RuntimeError(
-                "tiled_p2g does not support CDF colliders: the tiled kernel "
-                "has no thin-boundary masking")
-
-    def _build_p2g_block_tables(self) -> None:
-        """Per-block particle ranges for the tiled P2G scatter, from the block-sort
-        keys. Runs of equal keys become (start, count, window origin) rows; the runs
-        partition [0, n) whether or not the keys are sorted, so the tables stay a
-        valid cover between sort ticks. A particle that has drifted out of its
-        block's 6^3 node window deposits through the kernel's global-atomic path."""
-        x = self.x()
-        base = np.floor(x / self.grid.dx - 0.5).astype(np.int64)
-        blk = base >> 2
-        nb = (self.grid.n_grid >> 2) + 2
-        keys = (blk[:, 0] * nb + blk[:, 1]) * nb + blk[:, 2]
-        starts = np.concatenate([[0], np.nonzero(np.diff(keys))[0] + 1])
-        counts = np.diff(np.concatenate([starts, [len(keys)]]))
-        run_keys = keys[starts]
-        lo = np.empty((len(starts), 3), dtype=np.int32)
-        lo[:, 0] = (run_keys // (nb * nb)) * 4
-        lo[:, 1] = ((run_keys // nb) % nb) * 4
-        lo[:, 2] = (run_keys % nb) * 4
-        self._sim.tiled_p2g_blocks = {
-            "n": len(starts),
-            "start": wp.array(starts.astype(np.int32), dtype=int, device=self.device),
-            "count": wp.array(counts.astype(np.int32), dtype=int, device=self.device),
-            "lo": wp.array(lo, dtype=wp.vec3i, device=self.device),
-        }
 
     def _sort_particles(self) -> bool:
         """Block-key sort (stable): key = lexicographic 4^3-block index of the stencil
