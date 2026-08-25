@@ -7,8 +7,8 @@
 - A claymore-style tiled P2G scatter was built, verified, and measured:
   2.6x on the CPU p2g phase, 0.63x to 0.93x on the GH200, where L2-native
   atomics already absorb the plain scatter. Removed from this branch as a
-  hardware-obsolete optimization; implementation and verdict on the
-  wp-tile-scatter branch and in docs/performance.md.
+  hardware-obsolete optimization; implementation in history at
+  commit 9439972 (reverted 07fa0ea); verdict in docs/performance.md.
 
 - Adjoint code generation in the warp kernel modules is off by default (the
   simulator is never differentiated; a project invariant) and cold compile

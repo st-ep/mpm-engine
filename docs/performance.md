@@ -215,8 +215,8 @@ in 0.21 ms per substep), so the contention that made claymore's tier worth
 tile path pays a block barrier per scatter call for nothing. Production
 uses the fused path, which the tiled kernel cannot serve.
 
-The implementation, its tests, and the benchmark live on the
-`wp-tile-scatter` branch (commit 9439972). It is removed from this branch
+The implementation, its tests, and the benchmark live in this branch's
+history at commit 9439972, reverted in 07fa0ea. The code is removed
 so its kernel does not enlarge the compiled module for a path nobody runs.
 The claymore shared-memory item is closed as hardware-obsolete on Hopper,
 not as an unported gap.
