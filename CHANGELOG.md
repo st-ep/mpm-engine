@@ -4,6 +4,13 @@
 
 ### Added
 
+- Adjoint code generation in the warp kernel modules is off by default (the
+  simulator is never differentiated; a project invariant) and cold compile
+  drops 2.5x, 9.8 to 4.0 s CPU-measured, 320 s to an estimated ~130 s for
+  the sm90 NVRTC build. Set WARPMPM_ENABLE_BACKWARD=1 to compile adjoints;
+  the toggle exists for a future project that consciously retires the
+  invariant, and nothing in this repository uses gradients.
+
 - `experiments/nclaw/replay.py`: elastic-state replay for identification of
   plastic laws from positions alone. A plastic material's stored F is the
   elastic part; positions only give the total deformation, and on the

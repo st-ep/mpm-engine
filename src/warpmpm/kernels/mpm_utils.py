@@ -1,6 +1,13 @@
+import os
+
 import warp as wp
 
-wp.set_module_options({"enable_backward": False})  # the simulator is never differentiated (project invariant); skipping adjoint codegen cuts module compile time
+# The simulator is never differentiated (project invariant), so adjoint
+# codegen is off by default; it cuts module compile time 2.5x. Set
+# WARPMPM_ENABLE_BACKWARD=1 to compile adjoints for a project that
+# consciously retires the invariant.
+wp.set_module_options({"enable_backward":
+                       os.environ.get("WARPMPM_ENABLE_BACKWARD", "0") == "1"})
 
 from warpmpm.kernels.warp_utils import *  # noqa: F401,F403
 import numpy as np
