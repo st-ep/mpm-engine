@@ -100,6 +100,25 @@ in [docs/performance.md](docs/performance.md).
 - `profile=True`: per-phase substep timing table via `Solver.profile_report()`.
 - `guard_interval=K`: amortize the grid-edge guard readback.
 
+### Kernel compilation
+
+Warp compiles the kernel modules on first use and caches the result
+(`~/.cache/warp`, or `WARP_CACHE_PATH`). Any edit to a file under
+`src/warpmpm/kernels/` changes the module hash, so the first run after a pull
+recompiles: about 4 s on CPU, about 2 minutes for a CUDA build. Pre-warm with
+one short run per configuration before a timed sweep.
+
+Adjoint code generation is off by default, which is most of that compile
+time: this simulator is never differentiated (a project invariant), and
+skipping the backward kernels cuts cold compile 2.5x and the generated module
+3x. A project that consciously retires the invariant can compile the
+adjoints with:
+
+    WARPMPM_ENABLE_BACKWARD=1
+
+Nothing in this repository reads gradients; the toggle exists so the default
+never has to be edited in code.
+
 ## License, provenance, acknowledgments
 
 The group's code is MIT-licensed; see [LICENSE](LICENSE). The vendored core in

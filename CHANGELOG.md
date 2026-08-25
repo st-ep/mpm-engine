@@ -272,9 +272,9 @@
   a stated model instead of the 3D stress trace. Defaults are unchanged and the
   refusal for a dump with no oracle pressure still fires when no model is given.
   With a pressure supplied and no deviatoric stress, the yield set is selected on
-  kinematics alone (shearing under positive pressure), the cone-plateau estimator
+  kinematics alone (shearing under positive pressure), the cone-level estimator
   is unavailable, and a solve whose relative residual exceeds the existing 0.15
-  bar refuses instead of falling back to the plateau. The result now always
+  bar refuses instead of falling back to the cone level. The result now always
   records `friction_angle_solve` and the pressure source.
 - `experiments/` is now campaigns and an archive, nothing flat. Five campaigns
   are kept, each a package with a stages CLI, artifacts under `out/<name>/`, a
@@ -293,7 +293,7 @@
     eight, drifting copies. Every headline number was reproduced from the
     consolidated code on the dumps in the tree before the originals were deleted:
     sphere radial E error 0.0034888047331791405, cube radial 0.134340294155481,
-    grid gate sphere timeweak 0.0010229504340479867 and cube 0.000692258814248059
+    grid acceptance test sphere timeweak 0.0010229504340479867 and cube 0.000692258814248059
     with all four acceptance flags true, Mooney gentle probe C10 / C01 / Kbulk
     0.22101 / 0.36008 / 0.08380 at cond 713.42 over 5376 rows. The table is in
     `experiments/elastic/README.md`.
@@ -341,7 +341,7 @@
 - The no-stress tier on NCLaw's own trajectories, all four materials, five
   scenes each, against the full-channel cross-engine run of the same day. Which
   legs the stress channel was ever needed for: only sand's. Jelly's and
-  plasticine's elastic fits, plasticine's plateau yield reading and water's
+  plasticine's elastic fits, plasticine's strain-cap yield reading and water's
   volumetric fit return the full-channel parameters to every digit on the tier
   dump, and their ten rollout cells are bitwise the full-channel cells (checked
   cell by cell for plasticine, where the full-channel results.json survives).
@@ -350,7 +350,7 @@
   only:
 
   | source | median ratio | median relative error | friction fit |
-  | Hencky relation on F at E 1e6, nu 0.2 | 0.99997 | 0.014 percent | plateau 24.9755 deg, solve 37.02 at residual 0.481 |
+  | Hencky relation on F at E 1e6, nu 0.2 | 0.99997 | 0.014 percent | cone level 24.9755 deg, solve 37.02 at residual 0.481 |
   | measured within one cell of the floor, depth shape scaled to it | 0.982 | 1.0 | solve 30.53 deg at residual 0.630, refused |
   | depth below the per-column free surface | 0.813 | 0.96 | solve 30.72 deg at residual 0.716, refused |
 
@@ -367,10 +367,10 @@
   times: jelly 4.0 s, plasticine 7.9 s, sand 6.7 s for three pressure sources,
   water 1.7 s; a tier dump costs about 3 s per scene.
 - The von Mises yield stress from the momentum fit instead of the strain
-  plateau: 4424 Pa against 5000, 11.5 percent low, at relative residual 0.334,
+  cap: 4424 Pa against 5000, 11.5 percent low, at relative residual 0.334,
   which the 0.15 bar refuses. Rolled out anyway it gives 5.3e-5 on the dataset
   scene against a published 6.5e-5, so the margin falls from 90x to 1.2x. The
-  plateau reading needs no stress channel, so this is the price of not having
+  strain-cap reading needs no stress channel, so this is the cost of not having
   the stored elastic F either, not the price of the tier.
 - Positions-only tier on their jelly (positions and frame times measured,
   velocities by central finite difference, both gradients by moving least squares
