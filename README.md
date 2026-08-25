@@ -64,6 +64,7 @@ Code structure overview:
 
 ```bash
 uv pip install -e ".[dev,mujoco,render]"
+warpmpm-prewarm --device cuda:0     # compile the kernel modules once, ~2 min; rerun after pulls that touch src/warpmpm/kernels
 pytest                              # equivalence, conservation, coupling, identification
 python examples/pour_franka.py --fast --record   # pour + render in a separate GL process
 python examples/pour_franka.py --skip-video --frames 60 --profile   # where time goes
@@ -105,8 +106,8 @@ in [docs/performance.md](docs/performance.md).
 Warp compiles the kernel modules on first use and caches the result
 (`~/.cache/warp`, or `WARP_CACHE_PATH`). Any edit to a file under
 `src/warpmpm/kernels/` changes the module hash, so the first run after a pull
-recompiles: about 4 s on CPU, about 2 minutes for a CUDA build. Pre-warm with
-one short run per configuration before a timed sweep.
+recompiles: about 4 s on CPU, about 2 minutes for a CUDA build. Pre-warm with `warpmpm-prewarm --device cuda:0` before a timed sweep;
+the install line above includes it.
 
 Adjoint code generation is off by default, which is most of that compile
 time: this simulator is never differentiated (a project invariant), and

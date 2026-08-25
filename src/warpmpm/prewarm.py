@@ -5,16 +5,13 @@ src/warpmpm/kernels changes the hash and the next run pays the compile
 (about 4 s on CPU, about 2 minutes for CUDA). This script pays it now, for
 the standard configurations, so a sweep never eats it mid-run.
 
-    python benchmarks/prewarm.py [--device cuda:0]
+    warpmpm-prewarm [--device cuda:0]
+
+Run it once after `pip install` and after every pull that touches
+src/warpmpm/kernels; the README's install line includes it.
 """
 import argparse
-import sys
 import time
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "src"))
 
 
 def main() -> None:

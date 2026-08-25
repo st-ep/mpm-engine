@@ -36,6 +36,9 @@ build-backend = "hatchling.build"
 # enforces it.
 packages = ["src/warpmpm", "src/ident", "src/common"]
 
+[project.scripts]
+warpmpm-prewarm = "warpmpm.prewarm:main"
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
