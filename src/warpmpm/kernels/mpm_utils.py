@@ -29,9 +29,7 @@ def kirchoff_stress_stvk(F: wp.mat33, J: float, mu: float, lam: float):
     """St Venant-Kirchhoff with the same volumetric term the corotated form uses:
     tau = 2 mu F E + lam J (J - 1) I with E = (F^T F - I) / 2.
 
-    This is NCLaw's StVKElasticity verbatim (nclaw/material/preset.py). It is not
-    the fork's retired kirchoff_stress_StVK, which was removed as wrong; nothing
-    of that one is reused here.
+    This is a StVK implementation.
     """
     id = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
     E_green = 0.5 * (wp.transpose(F) * F - id)
@@ -41,8 +39,7 @@ def kirchoff_stress_stvk(F: wp.mat33, J: float, mu: float, lam: float):
 @wp.func
 def kirchoff_stress_volume_linear(J: float, lam: float):
     """Purely volumetric elasticity, tau = lam J (J - 1) I, so Cauchy pressure is
-    -lam (J - 1): linear in the volume change with no deviatoric term at all.
-    NCLaw's VolumeElasticity in mode 'taichi', which is what their water uses."""
+    -lam (J - 1): linear in the volume change with no deviatoric term at all."""
     id = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
     return id * (lam * J * (J - 1.0))
 
@@ -50,9 +47,7 @@ def kirchoff_stress_volume_linear(J: float, lam: float):
 @wp.func
 def kirchoff_stress_volume_ziran(J: float, mu: float, lam: float, gamma: float):
     """Volumetric equation of state tau = kappa (J - J^(1-gamma)) I with
-    kappa = 2 mu / 3 + lam, NCLaw's VolumeElasticity in mode 'ziran'. Their code
-    pins gamma = 2 because gamma = 7 broke their gradients; gamma is a parameter
-    here because this engine has no such constraint."""
+    kappa = 2 mu / 3 + lam."""
     id = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
     kappa = 2.0 / 3.0 * mu + lam
     Jc = wp.max(J, 1.0e-6)
@@ -345,16 +340,11 @@ def kirchoff_stress_hencky(
 def mu_i_return_mapping(
     F_trial: wp.mat33, model: MPMModelStruct, p: int, mat: int, dt: float
 ):
-    # Local mu(I) rheology (TrackEUCLID): the scalar mu(I) law of Jop, Forterre
-    # and Pouliquen inside a Hencky multiplicative return in the style of
-    # Dunatunga-Kamrin, WITHOUT their density/phase-separation and full stress
-    # algorithm (a repository-specific update, validated against the G0/G1
-    # gates):
-    # Hencky elastic predictor, scalar plastic correction on the yield
-    # surface tau_bar = mu(I) p with I = gamma_dot_p d sqrt(rho_s / p).
-    # The return is deviatoric (non dilatant): J and the pressure are
-    # preserved, so the dumped Cauchy stress trace equals the pressure the
-    # update consumed.
+    # Local mu(I) rheology: Jop-Forterre-Pouliquen scalar mu(I) law combined
+    # with a Dunatunga-Kamrin style Hencky multiplicative return.
+    # Predictor is Hencky elastic, with a scalar plastic correction on the yield
+    # surface tau_bar = mu(I) p where I = gamma_dot_p d sqrt(rho_s / p).
+    # The return is deviatoric (non-dilatant): J and pressure are preserved.
     U = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     V = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     sig = wp.vec3(0.0)
@@ -532,15 +522,12 @@ def mu_i_phi_pressure(model: MPMModelStruct, mat: int, J: float, Jp_ref: float):
 def mu_i_phi_return_mapping(
     F_trial: wp.mat33, state: MPMStateStruct, model: MPMModelStruct, p: int, mat: int, dt: float
 ):
-    # Compressible mu(I)-Phi(I) (TrackEUCLID, material 11). Repository-specific
-    # engineering model: the scalar mu(I) law is Jop-Forterre-Pouliquen, but the
-    # compaction EOS, the lagged reference volume, and the fixed dilatancy rate
-    # beta below are this codebase's own closure (validated in the TrackEUCLID
-    # gates), not a published algorithm. Deviatoric mu(I) yield
-    # against the COMPACTION pressure p = K(Phi/Phi_c(I)-1)_+ (not the elastic EOS),
-    # so the solid fraction relaxes toward the rate-dependent critical state Phi_c(I)
-    # under a free surface, an emergent O(chi) observable density signal. The
-    # volumetric strain is preserved in the return (the volume is physical, set by the
+    # Compressible mu(I)-Phi(I). The scalar mu(I) law is Jop-Forterre-Pouliquen;
+    # the compaction EOS, lagged reference volume, and dilatancy rate beta form
+    # the closure. Deviatoric mu(I) yield acts against the COMPACTION pressure 
+    # p = K(Phi/Phi_c(I)-1)_+ (not the elastic EOS), so the solid fraction relaxes 
+    # toward the rate-dependent critical state Phi_c(I).
+    # The volumetric strain is preserved in the return (the volume is physical, set by the
     # flow); the pressure comes from Phi via the compaction law, applied in the stress.
     # The realized inertial number I is stored in particle_Jp for the stress and the
     # next step's Phi_c lag.
@@ -682,12 +669,10 @@ def sand_return_mapping(
 def compose_dp_return_mapping(
     F_trial: wp.mat33, model: MPMModelStruct, p: int, mat: int
 ):
-    """Drucker-Prager return with cohesion, transcribed from NCLaw's
-    DruckerPragerPlasticity (nclaw/material/preset.py).
+    """Drucker-Prager return with cohesion.
 
-    Two guards differ from theirs and only where theirs is undefined: the
-    principal stretches are clamped at their 0.05 threshold, and the deviatoric
-    norm is floored at 1e-12, where their 0/0 would be NaN. At cohesion 0 this
+    The principal stretches are clamped at a 0.05 threshold, and the deviatoric
+    norm is floored at 1e-12 to avoid NaN. At cohesion 0 this
     agrees with sand_return_mapping (material 2) up to that clamp.
     """
     U = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -1065,8 +1050,8 @@ def p2g_particle(state: MPMStateStruct, model: MPMModelStruct, dt: float, p: int
                     + dt * elastic_force
                 )
                 if model.mls_transfer != 0:
-                    # MLS-MPM internal force (Hu et al. 2018, and what NCLaw's
-                    # p2g uses): the stress rides the SAME affine channel as C,
+                    # MLS-MPM internal force (Hu et al. 2018):
+                    # the stress rides the SAME affine channel as C,
                     # f_i = -4 inv_dx^2 V_p w_i sigma (x_i - x_p), instead of
                     # -V_p sigma grad w_i. Both sum to zero net force and the
                     # same net torque per particle; they differ per node by a
@@ -1139,8 +1124,7 @@ def grid_normalization_and_gravity(
 # Grid operator with freeslip wall semantics: mass division, gravity and the wall
 # clamp in one kernel. Free-surface and wall behavior differ from the default
 # path in three independent ways (approach-only wall clamp, eps-softened mass
-# division, free-fall velocity on empty nodes), each separately switchable; the
-# combination is what NCLaw's grid_op_freeslip does (nclaw/sim/mpm.py). Reached
+# division, free-fall velocity on empty nodes), each separately switchable. Reached
 # only once set_grid_semantics has asked for one of them; the default kernel
 # above is untouched.
 @wp.kernel
@@ -1168,11 +1152,9 @@ def grid_normalization_and_gravity_freeslip(
 
     if model.freeslip_bound > 0:
         b = model.freeslip_bound
-        # approach-only: the wall-normal component is zeroed only where it points
-        # INTO the wall, so separation off the wall is free. This is what freeslip
-        # means, and it is what NCLaw's grid_op_freeslip does; the index
-        # arithmetic matches theirs exactly, asymmetry included (the low face
-        # clamps b node layers, the high face b - 1).
+        # Approach-only clamp: the wall-normal velocity is zeroed only where it
+        # points INTO the wall, allowing free separation.
+        # Asymmetry matches external reference (low face clamps b layers, high face b-1).
         if grid_x < b and v[0] < 0.0:
             v = wp.vec3(0.0, v[1], v[2])
         if grid_y < b and v[1] < 0.0:
@@ -1275,8 +1257,7 @@ def g2p_particle(state: MPMStateStruct, model: MPMModelStruct, dt: float, p: int
         if model.particle_clip_cells > 0.0:
             # the advected position is clamped into
             # [clip * dx, grid_lim - clip * dx], a hard backstop behind the wall
-            # clamp that keeps a particle's stencil inside the grid (NCLaw's
-            # per-particle clip_bound, 0.5 in every blob config)
+            # clamp that keeps a particle's stencil inside the grid
             cb = model.particle_clip_cells * model.dx
             hi = model.grid_lim - cb
             x_new = wp.vec3(
@@ -1383,13 +1364,8 @@ def stress_update_particle(state: MPMStateStruct, model: MPMModelStruct, dt: flo
                 state.particle_F[p], U, V, J, model.mu[p], model.lam[p]
             )
         if mat == 1 or mat == 15:
-            # coaxial Hencky elasticity, tau = U diag(2 mu eps + lam tr eps) U^T,
-            # consistent with the log-space von-Mises return above. The fork's
-            # original form multiplied by V^T F^T, which injects an extra
-            # principal-stretch factor (tau_i scaled by sig_i): +100 percent
-            # stress at a 2x stretch, second-order small at the yield-limited
-            # elastic strains this material actually sustains. The jmpm port
-            # found and fixed the same bug; this is the backport.
+            # Coaxial Hencky elasticity, tau = U diag(2 mu eps + lam tr eps) U^T,
+            # consistent with the log-space von-Mises return above.
             stress = kirchoff_stress_hencky(U, sig, model.mu[p], model.lam[p])
         if mat == 2:
             stress = kirchoff_stress_drucker_prager(

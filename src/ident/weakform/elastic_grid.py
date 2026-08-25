@@ -65,18 +65,16 @@ at both ends of a time window gives
         = - INT dt sum_p m_p [ v_p (v_p . grad w) chi + v_p w chi' ],
 
 the M2 load already used for the granular space-time form in
-``galerkin_spacetime.py``. Only x, v and F are read, no derivative of a measured
-quantity appears, and the same sphere drop lands at 0.10 percent on E with the
-cube at 0.07. This is the route the NCLaw comparison ships;
-``assemble_elastic_grid`` keeps the instantaneous route for the manufactured
-tests, where the load is exact by construction.
+``galerkin_spacetime.py``. Only x, v and F are read; no derivative of a measured
+quantity appears. ``assemble_elastic_grid`` keeps the instantaneous route for the 
+manufactured tests, where the load is exact by construction.
 
 Scope. ``assemble_columns_timeweak`` is the law-independent engine. A caller
 supplies the volume-weighted Cauchy stress columns of any law linear in
 theta, and may supply a known stress part that enters as data. Node
 filtering, collider clearance, spatial windows, and the temporal weight are
-shared. The fixed-corotated pair is the first client and names the
-module; the constant-friction and EOS legs of the NCLaw comparison reuse it.
+shared. The fixed-corotated pair is the first client; constant-friction and 
+EOS comparisons reuse it.
 
 Node filtering, three reasons a node is dropped:
   1. Collider reach. ``collide`` in the fork overwrites grid_v_out at nodes with
@@ -224,11 +222,10 @@ def hencky_cauchy_columns(F: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         tau_mu = 2 U diag(log sig) U^T      tau_lam = tr(log sig) I
         s_*    = tau_* / J
 
-    The columns for a material whose generating elasticity is SigmaElasticity
-    (NCLaw's plasticine). Identifying such data with the corotated columns is
-    exact only at small strain; at the von Mises cap of about 2 percent
-    deviatoric strain the difference is second order but measurable.
-    """
+    The columns for a material whose generating elasticity is SigmaElasticity. 
+    Identifying such data with the corotated columns is exact only at small strain;
+    at the von Mises cap of about 2 percent deviatoric strain the difference is 
+    second order but measurable.
     F = np.asarray(F, dtype=float)
     U, sig, _ = np.linalg.svd(F)
     eps = np.log(np.clip(sig, 1e-12, None))

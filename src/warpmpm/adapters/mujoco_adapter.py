@@ -220,12 +220,9 @@ class FrankaArm:
 
 
 class PandaPour(FrankaArm):
-    """Scripted Franka POUR kinematics + the cup grasp transform, ported 1:1 from the
-    companion Genesis (SPH) pouring study so the robot action and
-    scene geometry are cross-comparable between the SPH and MPM simulators. FK is
-    bit-identical between this Menagerie panda and Genesis's panda.xml (verified at the
-    upright / 80% / full pour configs). The held glass's pose is the fixed handle-grasp
-    transform applied to the hand FK; drive the MPM cup collider with cup_pose_at(t).
+    """Scripted Franka POUR kinematics and cup grasp transform. The held glass's 
+    pose is the fixed handle-grasp transform applied to the hand FK; drive the 
+    MPM cup collider with cup_pose_at(t).
 
     Default action: smoothstep joint interpolation upright -> POUR_POSE_FRACTION of the
     full-pour config over TILT_SECONDS, then back over RETURN_SECONDS. The default
@@ -254,8 +251,7 @@ class PandaPour(FrankaArm):
         # optional render glasses: the watertight open-top mesh (write_glass_obj) is
         # added as an asset with two mocap bodies ("glass_src", "glass_rcv") so MuJoCo
         # draws the REAL glass geometry (thick base, filleted cavity) with glass-like
-        # transparency, matching the Genesis study's render. Pose them per frame
-        # with set_glass_pose.
+        # transparency. Pose them per frame with set_glass_pose.
         self._glass_mesh = None if glass_mesh is None else str(glass_mesh)
         self._glass_rgba = tuple(float(c) for c in glass_rgba)
         super().__init__(height=height, width=width, base_pos=self.BASE_POS,
@@ -323,7 +319,7 @@ class PandaPour(FrankaArm):
 
     def cup_pose_at(self, t: float):
         """World pose (pos, wxyz quat) of the held glass at time t: hand FK -> TCP ->
-        fixed handle-grasp transform (the Genesis study's _cup_pose_from_grasp_tcp)."""
+        fixed handle-grasp transform."""
         from warpmpm.colliders.glass import quat_from_mat, quat_to_mat
 
         self.set_time(t)

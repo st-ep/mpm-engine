@@ -14,10 +14,8 @@ wp.set_module_options({"enable_backward":
                        os.environ.get("WARPMPM_ENABLE_BACKWARD", "0") == "1"})
 
 
-# ids are pinned (dumps and caches store them); 3 and 4 are retired, not reused.
-# "foam" (3) shipped with an unfinished return map on a broken stress and "snow"
-# (4) never had a stress branch at all (zero stress); both were inherited from
-# the upstream fork and neither was reachable through the material factories.
+# Material IDs are pinned because they are serialized in dumps and caches.
+# IDs 3 (formerly "foam") and 4 (formerly "snow") are deprecated and must not be reused.
 MATERIAL_NAME_TO_ID = {
     "jelly": 0, "metal": 1, "sand": 2,
     "plasticine": 5, "fluid": 6, "stationary": 7, "rigid": 8,
@@ -25,9 +23,7 @@ MATERIAL_NAME_TO_ID = {
     "tabulated_mu_i": 13, "tabulated_yield": 15,
     # composed material: one elasticity kind and one plasticity kind, chosen
     # independently per material type (see ELASTICITY_KIND / PLASTICITY_KIND).
-    # Exists so NCLaw's constitutive zoo (nclaw/material/preset.py, composed the
-    # same way by their ComposeMaterial) can be reproduced term by term for a
-    # cross-engine comparison without touching any existing material path.
+    # Enables term-by-term replication of other engines' material models.
     "composed": 14,
 }
 # Kind tables for material 14. Every elasticity here is linear in (mu, lam) or in
@@ -261,9 +257,7 @@ class MPM_Simulator_WARP:
         self.n_particles = n_particles
 
         self.mpm_model = MPMModelStruct()
-        # domain will be [0,grid_lim]*[0,grid_lim]*[0,grid_lim] !!!
-        # domain will be [0,grid_lim]*[0,grid_lim]*[0,grid_lim] !!!
-        # domain will be [0,grid_lim]*[0,grid_lim]*[0,grid_lim] !!!
+        # Domain is [0, grid_lim]³
         self.mpm_model.grid_lim = grid_lim
         self.mpm_model.n_grid = n_grid
         self.mpm_model.grid_dim_x = self.mpm_model.n_grid
@@ -902,9 +896,8 @@ class MPM_Simulator_WARP:
             Node layers at each of the six domain faces that act as freeslip
             walls, applied inside the grid operator. The wall-normal velocity is
             zeroed only where it points into the wall, so a body separating from
-            the wall keeps its whole outward velocity. That is the correct
-            reading of freeslip, and it is what NCLaw's ``grid_op_freeslip`` does
-            (nclaw/sim/mpm.py); nodes with index < bound and index >
+            the wall keeps its whole outward velocity. This is the correct
+            reading of freeslip; nodes with index < bound and index >
             ``n_grid - bound`` are wall nodes. Prefer it to six
             ``add_surface_collider(..., "slip")`` planes, which project the
             normal component out unconditionally inside the half-space and hold
@@ -912,15 +905,14 @@ class MPM_Simulator_WARP:
         mass_eps
             Grid velocity becomes ``mv / (m + mass_eps)``, which damps the fringe
             nodes whose share of a stencil is a rounding error rather than a
-            physical mass. NCLaw's sim configs set 1e-7 at num_grids 20 and 0.0
-            at 32 and 64.
+            physical mass.
         empty_node_gravity
             Zero-mass nodes carry ``gravity * dt`` into g2p rather than zero, so
             a free surface is not gathered against a grid of resting nodes. g2p
             samples grid velocity regardless of node mass already, so nothing
             needs ungating there.
         mls_transfer
-            MLS-MPM transfer (Hu et al. 2018, and what NCLaw uses): the stress
+            MLS-MPM transfer (Hu et al. 2018): the stress
             rides the affine channel, ``f_i = -4 inv_dx^2 V_p w_i sigma
             (x_i - x_p)``, and F advances with the APIC matrix C instead of the
             gradient-weight velocity gradient L. The default is the
@@ -1297,9 +1289,9 @@ class MPM_Simulator_WARP:
             self._prev_grid_box = None
             wp.capture_launch(self._graph_A)
         else:
-            # restricted grid sweeps: zero/normalize/damping run over the live particle
-            # box when the wrapper has set one; zeroing uses the union with the previous
-            # box so nodes leaving the box are cleared exactly once
+            # Restricted grid sweeps: grid operations (zero, normalize, damping) only run
+            # inside the bounding box of active particles. Nodes that were active in the
+            # previous step but are now inactive are zeroed exactly once.
             gbox = (self.grid_launch_box
                     if (self.restrict_grid and self.grid_launch_box) else None)
             if gbox is None:
@@ -3093,10 +3085,7 @@ class MPM_Simulator_WARP:
         """Mirror one collider's pose/material into the per-lane state arrays the
         transfer kernels read (they cannot take collider structs). Every value is
         host-known (the collider params live on the host), so this writes host
-        mirrors and uploads them; it never reads a device array back. The old
-        read-modify-write did five .numpy() readbacks per call, and this runs per
-        moving lane per SUBSTEP, so on GPU each call stalled the stream five times
-        between graph launches."""
+        mirrors and uploads them to avoid stalling the GPU stream."""
         p = self.cdf_params[lane]
         m = self._cdf_lane_host
         m["center"][lane] = (p.center[0], p.center[1], p.center[2])
@@ -3210,24 +3199,20 @@ class MPM_Simulator_WARP:
 
     def _stamp_cdf(self, dt, device, lag_prev=False):
         """Per-substep tag maintenance with a static-pose skip: a lane restamps only
-        when its pose changed (dirty), and the zero/stamp/copy sequence is restricted
-        to the dirty lanes' boxes. With every pose unchanged the call is free, which
-        is what keeps resting CDF colliders off the per-substep host-launch path
-        (these kernels take live poses by value and cannot live inside a captured
-        graph).
+        when its pose has changed (dirty), and operations are restricted to the dirty
+        lanes' boxes. Unchanged poses incur no overhead.
 
-        prev-buffer discipline: the fused pipeline's g2p half reads colors(s-1) from
-        the prev grids while the p2g half reads colors(s) from cur, so with lag_prev
-        the stale region of prev is reconciled to cur BEFORE this substep's stamp
-        overwrites cur, and the freshly stamped box becomes the new stale region.
-        The split pipeline reads prev == cur within the substep, so it reconciles
-        and then copies its own stamp box after stamping, leaving nothing stale."""
+        Prev-buffer management:
+        - Fused pipeline (lag_prev=True): g2p reads prev, p2g reads cur. Prev is reconciled
+          to cur BEFORE stamping, and the new stamp becomes the stale region.
+        - Split pipeline (lag_prev=False): reads prev == cur. It reconciles and copies its
+          own stamp box after stamping, leaving nothing stale.
+        """
         if self.mpm_model.n_cdf == 0:
             return
         self._cdf_reconcile_prev(device)
-        # a start/end window opening or closing changes the stamped bits without
-        # any pose motion; the stamp kernel gates on time, so a restamp at the
-        # transition is what clears (or lays down) the lane's tags
+        # Active status transitions require a restamp even if the pose is unchanged,
+        # because the stamp kernel gates on time.
         for lane, param in enumerate(self.cdf_params):
             active = self.time >= param.start_time and self.time < param.end_time
             if active != self._cdf_lane_active[lane]:
