@@ -223,8 +223,18 @@ momentum within 1.3e-8 relative of the particle sums, and a staleness test that
 routes drifted particles through the fallback. `benchmarks/bench_tiled_p2g.py`
 measures the p2g phase; on the M-series CPU at 128^3 the tiled kernel is 2.6x
 faster (14.4 vs 38.0 ms per substep at 100k particles, 73.5 vs 189.6 ms at
-500k) from tile locality alone, one lane per block. The shared-memory
-contention win this path exists for needs the GH200 measurement.
+500k) from tile locality alone, one lane per block.
+
+Measured on the GH200 (2026-08-25, two runs): the tiled path LOSES on this
+GPU, 0.63x at 100k particles and 0.88 to 0.93x at 500k (plain 0.21 and 0.94
+ms per substep against tiled 0.34 and 1.08). Hopper's L2-native
+floating-point atomics absorb the plain scatter (2.7 million atomic adds in
+0.21 ms), so the contention that made claymore's shared-memory tier worth 3
+to 10x on RTX-2080-era hardware is no longer the bottleneck, while the tile
+path still pays a block barrier per scatter call. The 100k-to-500k trend
+tracks occupancy (331 blocks fill a sixth of the GPU); a 2M-particle run
+would close whether a crossover exists at scale. Verdict: `tiled_p2g` is a
+CPU-side accelerator; leave it off on CUDA.
 
 One warp 1.14 limitation: `wp.tile_atomic_add` rejects an array reached through a
 struct member ("'Reference' object has no attribute 'dtype'"), so the kernel takes
