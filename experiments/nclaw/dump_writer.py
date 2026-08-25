@@ -49,7 +49,9 @@ class DumpWriter:
         l_convention: str = "pending",
         extra: dict | None = None,
         store_F: bool = False,
+        compress: bool = False,
     ):
+        self.compress = bool(compress)
         self.solver = solver
         # the elastic and elastoplastic identifications need the deformation
         # gradient and the REFERENCE particle volume, neither of which the
@@ -225,5 +227,10 @@ class DumpWriter:
             arrays["F"] = np.stack(self._F)
             arrays["volume0"] = self._vol0
 
-        np.savez_compressed(path, **arrays)
+        if self.compress:
+            np.savez_compressed(path, **arrays)
+        else:
+            # zlib dominated the write (267 of 278 s on a bunny dump, Vista);
+            # uncompressed is ~10 percent bigger and 24x faster to write
+            np.savez(path, **arrays)
         return path
