@@ -477,17 +477,26 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
                "recovered": theta is not None})
     t0 = time.time()
     step = 0
+    t_snap = t_step = 0.0
     for frame in range(n_frames + 1):
-        if not writer.snapshot(frame * frame_dt):
+        t1 = time.time()
+        ok = writer.snapshot(frame * frame_dt)
+        t_snap += time.time() - t1
+        if not ok:
             log(f"[gen] NaN at frame {frame}; truncating")
             break
         if frame == n_frames:
             break
+        t1 = time.time()
         for _ in range(substeps):
             s.p2g2p(step, dt, device=device)
             step += 1
+        t_step += time.time() - t1
+    t1 = time.time()
     writer.finalize(out_path, frame_dt=frame_dt)
-    log(f"[gen] wrote {out_path.name} ({time.time() - t0:.0f}s)")
+    log(f"[gen] wrote {out_path.name} ({time.time() - t0:.0f}s: "
+        f"substeps {t_step:.0f}s, snapshots {t_snap:.0f}s, "
+        f"file write {time.time() - t1:.0f}s)")
     return out_path
 
 
