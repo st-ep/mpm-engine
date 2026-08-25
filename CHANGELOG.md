@@ -4,6 +4,20 @@
 
 ### Added
 
+- `Solver(tiled_p2g=True)`: claymore-style shared-memory P2G scatter through
+  warp 1.14's tile primitives. One thread block per 4^3 particle block
+  accumulates deposits in a 3.4 KB shared vec4 tile over the block's 6^3 node
+  window (`wp.tile_scatter_add`) and writes back with two `wp.tile_atomic_add`
+  calls; drifted particles fall back to global atomics inside the kernel, so
+  block tables built on sort ticks stay correct between rebuilds. Requires
+  `sort_interval >= 1` and `fused=False`; refuses sparse mode, periodic x, and
+  CDF colliders; off by default and bitwise inert when off.
+  `tests/test_tiled_p2g.py` holds the deposits equal to the plain scatter
+  (max node error 2.7e-7 relative, conservation to 1.3e-8);
+  `benchmarks/bench_tiled_p2g.py` times the p2g phase (CPU at 128^3: tiled
+  2.6x faster at 100k and 500k from tile locality; the atomic-contention win
+  awaits the GH200 run).
+
 - Adjoint code generation in the warp kernel modules is off by default (the
   simulator is never differentiated; a project invariant) and cold compile
   drops 2.5x, 9.8 to 4.0 s CPU-measured, 320 s to an estimated ~130 s for
