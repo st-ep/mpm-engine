@@ -1,5 +1,8 @@
 import warp
 import warp as wp
+
+wp.set_module_options({"enable_backward": False})  # the simulator is never differentiated (project invariant); skipping adjoint codegen cuts module compile time
+
 try:  # warp.torch was a separate submodule import in warp<=1.10; gone/needless in 1.14+
     import warp.torch  # noqa: F401
 except Exception:

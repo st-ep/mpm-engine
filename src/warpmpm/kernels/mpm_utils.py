@@ -1,4 +1,7 @@
 import warp as wp
+
+wp.set_module_options({"enable_backward": False})  # the simulator is never differentiated (project invariant); skipping adjoint codegen cuts module compile time
+
 from warpmpm.kernels.warp_utils import *  # noqa: F401,F403
 import numpy as np
 import math

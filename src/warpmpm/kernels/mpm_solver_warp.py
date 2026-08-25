@@ -6,6 +6,8 @@ import numpy as np
 from warpmpm.kernels.warp_utils import *  # noqa: F401,F403
 from warpmpm.kernels.mpm_utils import *  # noqa: F401,F403
 
+wp.set_module_options({"enable_backward": False})  # the simulator is never differentiated (project invariant); skipping adjoint codegen cuts module compile time
+
 
 # ids are pinned (dumps and caches store them); 3 and 4 are retired, not reused.
 # "foam" (3) shipped with an unfinished return map on a broken stress and "snow"
