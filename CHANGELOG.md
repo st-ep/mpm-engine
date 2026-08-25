@@ -22,9 +22,9 @@
   the plastic parameter by the time-weak momentum assembly with every
   sub-yield particle's full stress as data. On the true hidden state that
   fit recovers the yield stress to 1.5 percent; on the replayed state the
-  residual gate refuses it (directions align to 0.98 but the errors are
+  residual check refuses it (directions align to 0.98 but the errors are
   spatially correlated, and the volumetric part drifts to |dJ| 0.23 at p95),
-  so the tier now refuses where it used to ship garbage.
+  so the tier now refuses where it once reported wrong values without warning.
 - `experiments/nclaw/rollout_scan.py`: derivative-free system identification
   of one parameter by rolling the engine from the tier's frame-0 seed and
   scoring position MSE against the identify trajectory, coarse grid plus
@@ -62,7 +62,7 @@
   plate under the pile would give; `hencky_yield_parts` and
   `identify_yield_momentum` make the von Mises yield stress the single unknown
   of a momentum fit on the kinematically flowing set, the estimator that does
-  not use the strain plateau. `stage_identify_no_stress` returns what
+  not use the strain cap. `stage_identify_no_stress` returns what
   `suite.stage_identify` returns plus `theta_variants`, one entry per extra
   estimator, each already in the engine's arguments so it can be rolled out.
 - `experiments/nclaw/compare.py --no-stress` and `--positions-only`: the same
