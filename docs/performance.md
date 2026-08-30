@@ -4,8 +4,10 @@ How the explicit solver was profiled and optimized, what each change bought, and
 equivalence guarantee behind each one. Provenance and BibTeX for borrowed designs are
 in AUTHORS.md. Benchmarks quoted below come from two machines: an Apple M3 Max (warp
 CPU, single threaded) and a TACC Vista GH200 node (driver 590.48.01, July 2026). The
-GPU workload is the 192^3 honey pour of examples/pour_franka.py: 340k particles, 432
-substeps per frame.
+GPU workload is the 192^3 honey pour of examples/pour_franka.py AS OF that pass: the
+Genesis-glass scene, 340k particles, 432 substeps per frame. (The example has since
+moved to the measured 500 mL measuring cup, ~58k particles at 192^3; the relative
+stage-by-stage story below is what transfers.)
 
 ## Measured results
 

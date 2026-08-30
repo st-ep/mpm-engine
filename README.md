@@ -34,7 +34,9 @@ What exists:
   colliders, restricted launches, active-block compute, CUDA graphs.
 - `materials/`: composable presets (`newtonian`, `granular`, `elastic`, `vonmises`,
   `dough`, tabulated laws).
-- `geometry/`: watertight mesh to SDF (winding-number sign), cached; cup meshes.
+- `geometry/`: watertight mesh to SDF (winding-number sign), cached; cup meshes;
+  `measuring_cup.py`, the measured 500 mL cup of the hardware pour (elliptical taper +
+  spout + handle, analytic collision field, masks, fill, volume curve).
 - `colliders/glass.py`: analytic revolved glass profile, cavity/solid masks, leak
   projection.
 - `coupling/`: grid-impulse (Newton-exact) and stress-integral wrench readouts;
@@ -54,7 +56,9 @@ What exists:
 
 ## Performance
 
-Measured on the 192^3 honey pour (340k particles, 432 substeps/frame, GH200):
+Measured on the 192^3 honey pour as of the optimization pass (the Genesis-glass scene,
+340k particles, 432 substeps/frame, GH200; the example since moved to the measured
+500 mL cup, ~58k particles at 192^3, so absolute ms/frame are lower today):
 
 | stage | sim ms/frame |
 | --- | --- |

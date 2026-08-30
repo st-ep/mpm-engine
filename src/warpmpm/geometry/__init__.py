@@ -9,6 +9,11 @@ the engine keeps its numpy + warp footprint and the field is fully testable.
 """
 from __future__ import annotations
 
+from warpmpm.geometry.measuring_cup import (
+    MeasuringCupSpec,
+    build_cup_sdf,
+    write_cup_obj,
+)
 from warpmpm.geometry.mesh_sdf import (
     SDFData,
     build_sdf,
@@ -20,11 +25,14 @@ from warpmpm.geometry.mesh_sdf import (
 )
 
 __all__ = [
+    "MeasuringCupSpec",
     "SDFData",
+    "build_cup_sdf",
     "build_sdf",
     "build_sdf_cached",
     "load_sdf",
     "make_cup_mesh",
     "revolve_profile",
     "save_sdf",
+    "write_cup_obj",
 ]
