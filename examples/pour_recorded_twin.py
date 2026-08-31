@@ -1,7 +1,7 @@
-"""Digital twin of a RECORDED hardware pour episode (pouring_real_data/epNNNN).
+"""Digital twin of a recorded hardware pour episode (pouring_real_data/epNNNN).
 
 Where pour_franka.py replays the Genesis study's scripted action, this twin replays the
-REAL robot: the Franka's recorded joint trajectory drives the same MuJoCo Panda, and the
+real robot: the Franka's recorded joint trajectory drives the same MuJoCo Panda, and the
 held measuring cup follows the fingertips through the measured grasp chain. The liquid is
 the episode's dyed food-grade glycerol, filled to the measured initial volume. Everything
 else (cup SDF collider with exact cavity + thickened walls, wrench readouts, leak audit,
@@ -11,7 +11,7 @@ Kinematic chain (verified against ep0001):
   recorded joints -> MuJoCo hand FK -> TCP at +0.1034 m along hand z. That offset is the
   Franka fingertip pinch point: FK(hand) + R_hand @ (0,0,0.1034) reproduces the recorded
   ee_pos/ee_quat to <1 mm / ~0 deg across the pour window, so arm render and cup physics
-  share one pose source. The cup hangs from the pinch point at the SAME holding point as
+  share one pose source. The cup hangs from the pinch point at the same holding point as
   pour_franka (GRASP_LOCAL: handle column mid-height), and the constant hand->cup rotation
   is solved at the pour-start reference tick from the nominal insertion: cup upright,
   spout toward world -x (the tilt is +60 deg about world -y, so -x is downhill).
@@ -19,13 +19,15 @@ Kinematic chain (verified against ep0001):
 Scene constants measured from the episode's side camera (embedded AprilTag extrinsics,
 1.8 mm / 0.36 deg residuals):
   tabletop      z = -0.063 m in the robot base frame (the base sits on a riser)
-  receiver      the SAME 500 mL measuring-cup model, at the amber-liquid centroid of the
+  receiver      the same 500 mL measuring-cup model, at the amber-liquid centroid of the
                 settled end frame (ep0001: x=0.278, y=-0.032), spout toward -x
 Both are nominal-calibration stage-1 values; --table-z / --receiver-xy override.
 
-Glycerol: eta defaults to 1.2 Pa.s (~pure at 23 C) -- temperature/water-content move it
-by 2x, so treat it as a prior to sweep, not truth. rho = 1260. bulk_modulus stays the
-artificial 9e5 of the honey twin (Ma < 0.1 at pour speeds; true K would cost ~50x).
+Glycerol: eta defaults to the 20 C literature value 1.41 Pa.s; temperature and absorbed
+water move it by ~2x, so treat it as a prior, not truth (the ep0001 weak-form fit in
+experiments/pour_weakform_identify.py gives 3.03 -- pass it via --eta). rho = 1260.
+bulk_modulus stays the artificial 9e5 of the honey twin (Ma < 0.1 at pour speeds; the
+true K would cost ~50x).
 
 Run:
   python examples/pour_recorded_twin.py                       # ep0001, 192^3, video
@@ -75,12 +77,9 @@ REPO = Path(__file__).resolve().parents[1]
 OUT_ROOT = REPO / "out" / "pour_recorded_twin"
 
 SPEC = MeasuringCupSpec()
-# receiver orientation: 180 deg about z — spout toward -x, handle toward +x (the robot),
-# matching the video. (Identity would point the spout at the held cup.)
+# receiver: 180 deg about z -- spout toward -x, handle toward +x, matching the video
 Q_RCV = np.array([0.0, 0.0, 0.0, 1.0])
-# eta: pure glycerol at the user's stated 20 C lab temperature (Segur & Oberstar 1951:
-# 1.412 Pa.s at 100%/20 C). Temperature and absorbed water move it strongly (0.95 at
-# 25 C, ~halved by 5% water) -- --eta overrides for sweeps.
+# eta: Segur & Oberstar 1951, pure glycerol at 20 C (see module docstring); --eta overrides
 GLYCEROL = dict(eta=1.41, density=1260.0, bulk_modulus=9.0e5)
 VOLUME_ML = 300.0
 CUP_FRICTION = 0.05
@@ -89,10 +88,9 @@ WALL_CELLS = 3.0
 FPS = 60
 PRE_ROLL = 1.0        # quiet seconds before the pour move (liquid settles on camera)
 HOLD_SECONDS = 2.5    # keep simulating after the return (clamped before the lift step)
-# settle until the mean particle speed drops below this (or the time cap): glycerol's
-# viscous damping time rho*L^2/eta ~ 2.6 s is 7x honey's, so a fixed honey-sized bake
-# leaves the surface visibly creeping (~6 mm/s = several particle diameters per second)
-SETTLE_SPEED = 1.5e-3   # m/s mean; reached at ~2.5 s for eta=1.2 at 192^3
+# settle to quiescence rather than for a fixed time: glycerol's viscous damping time
+# rho*L^2/eta ~ 2.6 s is 7x honey's, and a honey-sized bake leaves the surface creeping
+SETTLE_SPEED = 1.5e-3   # m/s mean particle speed; reached at ~2.5 s at 192^3
 SETTLE_MAX_S = 5.0
 GRID_LIM = 0.7
 LIQUID_RGBA = np.array([0.93, 0.45, 0.10, 1.0])   # the dyed glycerol's amber
@@ -103,7 +101,7 @@ RENDER_MAX = 120_000
 # Rim-ellipse fits with the cup's known top semi-axes on the fused pre-pour depth cloud:
 # receiver center 2.5 mm median residual (4.7k pts); held-cup center 1.4 mm (68 clean
 # pts, gripper/spout/liquid excluded), giving the cup-in-hand shift below. The grasp
-# HEIGHT is separately confirmed by the pre-pour liquid-surface z (within 2 mm).
+# height is separately confirmed by the pre-pour liquid-surface z (within 2 mm).
 TABLE_Z = -0.063
 RECEIVER_XY = (0.2934, -0.0230)
 # world-frame offset of the real cup axis vs the nominal handle grasp at the reference
@@ -114,8 +112,8 @@ R_CUP_REF = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]])
 # grasp roll about the tilt axis (deg): +ve leans the cup top toward the handle (+x),
 # reducing the effective tilt and delaying pour onset. The one orientation DOF the rim
 # fit cannot see; calibrated so the sim's receiver-arrival time matches the video
-# (real: t_send + 1.70 s; sensitivity 0.042 s/deg, ep0001 sweep at eta=1.41 landed
-# 1.0 deg dead-on at 60 fps resolution). Viscosity plays no part in this observable.
+# (real: t_send + 1.70 s; sensitivity 0.042 s/deg; ep0001 sweep at eta=1.41). The
+# arrival time couples to eta only weakly (second order, ~0.1 s over 1.4 -> 3.0 Pa.s).
 GRASP_ROLL_DEG = 1.0
 
 
@@ -181,12 +179,12 @@ def side_camera_view(meta: dict) -> dict:
 # recorded arm
 # --------------------------------------------------------------------------------------
 class RecordedPanda(FrankaArm):
-    """MuJoCo Panda driven by the RECORDED joint track; base at the robot base frame
+    """MuJoCo Panda driven by the recorded joint track; base at the robot base frame
     origin so MuJoCo world == base frame. The held cup follows the fingertip pinch
     point (TCP) through the fixed handle grasp, like PandaPour but with the constant
     hand->cup rotation solved at the pour-start reference tick."""
 
-    TCP_LOCAL = np.array([0.0, 0.0, 0.1034])       # hand -> fingertip pinch (verified)
+    TCP_LOCAL = np.array([0.0, 0.0, 0.1034])       # hand -> pinch point (<1 mm vs ee_pos)
     GRASP_LOCAL = np.array([-0.0863, 0.0, 0.060])  # pour_franka's holding point
 
     def __init__(self, ep: dict, glass_mesh: Path, height: int = 848, width: int = 480,
@@ -304,8 +302,8 @@ def substeps_per_tick(liq: dict, dx: float, dt_tick: float) -> int:
 
 def world_to_mpm_offset(arm: RecordedPanda, receiver_pos, dx: float) -> np.ndarray:
     """Offset such that the swept held cup, the receiver, and the table fit in the MPM
-    domain with margin. Sampled over the FULL episode window (never a --frames cap) so
-    the offset — and with it the cached settled state — is stable per episode."""
+    domain with margin. Sampled over the full episode window (never a --frames cap) so
+    the offset -- and with it the cached settled state -- is stable per episode."""
     n_all = round(arm.duration * FPS)
     centers = np.array([arm.cup_pose_at(k / FPS)[0] for k in range(0, n_all, 3)])
     reach = 0.16  # cup local AABB radius incl. handle/spout
@@ -318,7 +316,7 @@ def world_to_mpm_offset(arm: RecordedPanda, receiver_pos, dx: float) -> np.ndarr
     span = (hi - lo) + 2 * pad
     if span.max() > GRID_LIM:
         raise SystemExit(f"replay does not fit the {GRID_LIM} m domain: span {span}")
-    off = pad - lo + 0.5 * (GRID_LIM - span)  # centered
+    off = pad - lo + 0.5 * (GRID_LIM - span)
     return off.astype(np.float64)
 
 
@@ -472,7 +470,7 @@ def run(episode: Path, device: str = "auto", n_grid: int = 192, video: bool = Tr
     print(f"world->mpm offset {np.round(w2m, 4)}; cup0 {np.round(cup_pos0, 4)} "
           f"tilt0 {arm.tilt_degrees(cup_quat0):.2f}deg; receiver {receiver_pos}")
 
-    # ---- settle (cached; stored in WORLD frame so a changed w2m cannot shift it) ----
+    # ---- settle (cached; stored in world frame so a changed w2m cannot shift it) ----
     cache = out / f"settled_n{n_grid}_v{int(volume_ml)}.npz"
     loaded = False
     if cache.exists() and not rebake:

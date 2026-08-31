@@ -6,7 +6,7 @@ pose chain, and the caliper rim geometry close
 
     V(t) - V(t0) = (1/eta) INT F dt',   F = (rho g / 3) sin(a(t)) INT h(y,t)^3 dy
 
-which is linear in 1/eta and solved as ONE robust convex least squares. No simulator
+which is linear in 1/eta and solved as one robust convex least squares. No simulator
 is run, differentiated, or iterated anywhere in the fit, and no derivative of data
 is ever taken.
 
@@ -150,7 +150,6 @@ def condition(obs: dict, t_window: tuple[float, float],
             k += 1
         w[f, :k] = np.nan
         chi[f, :k] = np.nan
-        # trim the top: bins within JET_TOP margin handled by perception already
     # smooth along z; derivatives via the same fits
     R = 0.5 * _savgol_nan_2d(w, SMOOTH_ZBINS, dx=dz)
     dchi = _savgol_nan_2d(chi, SMOOTH_ZBINS, deriv=1, dx=dz)
@@ -345,10 +344,10 @@ def bingham_fit(b, c, tau, keep):
 # --------------------------------------------------------------------------------------
 def selftest(eta_true: float = 1.3, Q_true: float = 3.2e-5, noise: float = 0.01,
              seed: int = 0):
-    """Recovery gate at 1% width noise; at 2% the 8-seed spread is mean -5%, sd 13%
-    (15 rows), i.e. unbiased but noise-limited -- the real fit carries more rows."""
     """Generate profiles by solving the steady slender-jet ODE (sigma = 0) at a known
-    viscosity, add width noise, and require the estimator to recover eta and Q."""
+    viscosity, add width noise, and require the estimator to recover eta and Q.
+    Gate at 1% width noise; at 2% the 8-seed spread is mean -5%, sd 13% (15 rows):
+    unbiased but noise-limited."""
     from scipy.integrate import solve_bvp
 
     global SIGMA
@@ -402,11 +401,9 @@ def selftest(eta_true: float = 1.3, Q_true: float = 3.2e-5, noise: float = 0.01,
 # --------------------------------------------------------------------------------------
 # brink (spout-lip) weak form: the primary real-data channel
 #
-# The optical field channels are defeated by this episode's optics (the through-wall
-# jet is refraction-distorted by the receiver's rim/graduations, and the spout film
-# has the amber cup body directly behind it, so it has no silhouette). What remains
-# trustworthy is integral: the receiver's own graduation curve V(t), the onset, the
-# exact cup kinematics, and the caliper geometry. Those still close a weak form:
+# The optical field channels are defeated by this episode's optics (module docstring);
+# what remains trustworthy is integral: the receiver's graduation curve V(t), the
+# onset, the cup kinematics, and the caliper geometry. Those still close a weak form:
 #
 #   mass       V_src(t) = V0 - V_rcv(t) - V_flight(t)         (conservation)
 #   geometry   V_src -> horizontal free-surface level L(t) in the TILTED cup
@@ -420,8 +417,9 @@ def selftest(eta_true: float = 1.3, Q_true: float = 3.2e-5, noise: float = 0.01,
 #              with q_i = Q * h_i^3 / sum h^3 (leading-order transverse split) and
 #              Q(t) = dV_rcv/dt read from the receiver graduation curve.
 #
-# Everything except eta is measured or caliper geometry; eta enters linearly; the
-# solve is the same robust convex least squares. Stated systematics (reported, not
+# Everything except eta is measured or caliper geometry, and eta enters linearly.
+# The balance is imposed time-integrated (brink_forcing / fit_eta_integrated), so no
+# derivative of data is ever taken. Stated systematics (reported, not
 # hidden): (1) the brink drawdown -- the free surface dips in the last few depths
 # before the lip, so the head-based h overestimates the brink depth and the O(1)
 # discharge coefficient is absorbed into eta_hat; (2) the flow sits between the
@@ -562,8 +560,8 @@ def run_brink(episode: str, v0_ml: float, t_fit):
                rms_mL=rms, v0_ml=v0_ml, t_fit=list(t_fit),
                h_tip_max_mm=float(np.nanmax(o["h_tip"]) * 1e3),
                dV_total_mL=float(dV[-1]))
-    # V0 scan: the head enters cubed; the drain shape has to stay consistent with a
-    # single eta over the whole window, which selects the physical fill
+    # V0 scan: the head enters cubed, so eta_hat is sensitive to the fill. On ep0001
+    # the scan is monotone (V0 is not co-identifiable); reported as a stated systematic
     v0_scan = []
     for v0 in np.arange(v0_ml - 30.0, v0_ml + 30.0 + 1e-9, 5.0):
         ov = brink_forcing(obs, float(v0), tuple(t_fit), eta_flight=eta0)

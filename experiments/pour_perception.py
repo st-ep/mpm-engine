@@ -12,15 +12,15 @@ needs, with no learned tracker:
                         predicted mask {z_on < L} and the observed amber mask. Volume
                         follows from a cavity point lattice below the fitted plane
                         (the cup is tilted, so the upright graduation curve does not
-                        apply). DIAGNOSTIC only: wall dye-film + lensing bias it by
+                        apply). Diagnostic only: wall dye-film + lensing bias it by
                         +60-90 mL; the brink identification closes mass from
                         V0 - V_rcv instead.
-  receiver level/volume the same match with a PRECOMPUTED z_on map (the receiver is
+  receiver level/volume the same match with a precomputed z_on map (the receiver is
                         static) and the exact upright cavity-volume curve. This V(t)
                         is the identification's only liquid observable, and the twin
                         comparison reads the same curve.
 
-Direct FIELD channels (free-jet silhouette widths, spout-film thickness) were built
+Direct field channels (free-jet silhouette widths, spout-film thickness) were built
 and defeated by this episode's optics: the through-wall jet is refraction-distorted
 by the receiver's rim band/graduations (+-40% width bulges -> negative eta), and the
 spout film has the amber body directly behind it in image space (no silhouette).
@@ -82,7 +82,7 @@ OUT_ROOT = REPO / "out" / "pour_wf"
 
 # ---- amber segmentation (HSV; hue wraps at red). Tuned on ep0001 probe frames. ------
 HUE_LO, HUE_HI = 0.965, 0.115     # accept hue <= HI or >= LO (deep orange-red)
-SAT_MIN, VAL_MIN = 0.42, 0.12     # generous mask (jet, thin pools)
+SAT_MIN, VAL_MIN = 0.42, 0.12     # generous amber mask (thin pools included)
 # The cup walls carry a dyed film wherever liquid has been (and the filled cup lenses
 # its apparent body upward), so the LEVEL fits match only the DEEP liquid: pixels
 # whose ray crosses more than CHORD_* metres of liquid are saturated (measured 0.90+
@@ -98,7 +98,7 @@ CAVITY_INSET = 0.0012             # m; require this depth inside the cavity (wal
 LATTICE_H = 0.0012                # m; source-cup volume lattice pitch
 LEVEL_STEP = 0.0005               # m; level-scan resolution (~4 mL on the receiver)
 RIM_Z_WORLD = TABLE_Z + SPEC.rim_z
-SIGMA_GLYCEROL = 0.063            # N/m, 20 C (identification uses it, stored for record)
+SIGMA_GLYCEROL = 0.063            # N/m at 20 C; stored in the npz for record
 
 
 class Camera:
@@ -313,9 +313,8 @@ def run(ep_dir: Path, stride: int = 1, video: bool = True, probe: bool = False,
     rcv_pos = np.array([RECEIVER_XY[0], RECEIVER_XY[1], TABLE_Z])
     lattice, cell_vol = build_cavity_lattice()
 
-    # receiver turn-on map: static, computed once. The receiver stays a VALIDATION
-    # channel; its level uses the plain first-touch model + generous amber mask,
-    # which reads the settled end state at IoU ~0.96 on ep0001.
+    # receiver turn-on map: static, computed once. The level uses the first-touch
+    # model + generous amber mask (reads the settled end state at IoU ~0.96 on ep0001).
     rcv_roi = roi_from_pose(cam, rcv_pos, quat_to_mat(Q_RCV))
     rcv_zon, _rcv_deep, rcv_chord = z_on_map(cam, rcv_pos, Q_RCV, rcv_roi, CHORD_RCV)
 
@@ -372,8 +371,8 @@ def run(ep_dir: Path, stride: int = 1, video: bool = True, probe: bool = False,
             # ---- receiver -------------------------------------------------------------
             ru0, ru1, rv0, rv1 = rcv_roi
             rcv_obs = amber[rv0:rv1 + 1, ru0:ru1 + 1]
-            # exclude the falling stream: pixels whose ray passes within 20 mm of the
-            # vertical line through the lip's xy (the jet axis) above the current pool
+            # exclude the falling stream: rays passing within 20 mm of the vertical
+            # line through the lip's xy
             uu, vv = np.meshgrid(np.arange(ru0, ru1 + 1), np.arange(rv0, rv1 + 1))
             d = cam.rays(np.stack([uu.ravel(), vv.ravel()], 1).astype(np.float64))
             oxy, dxy = cam.t[:2] - lip[:2], d[:, :2]
@@ -443,6 +442,7 @@ def mask_boundary(mask: np.ndarray) -> np.ndarray:
 
 def draw_overlay(rgb, amber, src_roi, src_pred, rcv_roi, rcv_pred, stream_band,
                  cam: Camera, lip):
+    """Extraction proof: amber tint, fitted level boundaries, stream band, lip marker."""
     img = rgb.copy()
     img[amber] = (0.65 * img[amber] + 0.35 * np.array([255, 255, 0])).astype(np.uint8)
     u0, u1, v0, v1 = src_roi

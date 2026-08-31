@@ -5,8 +5,8 @@ Consumes:
   out/pour_wf/<ep>/observations.npz     perception (real V(t) via the graduation curve)
   out/pour_wf/<ep>/identify.json        the weak-form eta_hat
   out/pour_recorded_twin/<ep>/metrics.csv and side_by_side.mp4
-                                        the ONE twin run at eta_hat (the only
-                                        simulation in the whole pipeline)
+                                        the single twin run at eta_hat (the only
+                                        simulation in the pipeline)
 
 Produces (out/pour_wf/<ep>/):
   validation.png            real vs predicted transfer curves + errors
@@ -61,7 +61,6 @@ def numbers(obs, sim) -> dict:
     late = ok & (t_r > t_r[ok].max() - 1.0)
     v_final_real = float(np.median(v_r[late]))
     v_final_sim = float(v_s[-1])
-    # RMS over the overlap where both are defined
     m = ok & (t_r >= t_s.min()) & (t_r <= t_s.max())
     v_sim_i = np.interp(t_r[m], t_s, v_s)
     rms = float(np.sqrt(np.mean((v_r[m] - v_sim_i) ** 2)))
