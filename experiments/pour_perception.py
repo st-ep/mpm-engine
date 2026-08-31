@@ -1,4 +1,4 @@
-"""Free-surface and jet kinematics of a recorded pour episode, from the RGB videos.
+"""Free-surface observables of a recorded pour episode, from the RGB videos.
 
 The pour's transparent measuring cups make the dyed glycerol body visible through the
 walls, so the episode's own cameras measure everything the weak-form identification
@@ -12,14 +12,20 @@ needs, with no learned tracker:
                         predicted mask {z_on < L} and the observed amber mask. Volume
                         follows from a cavity point lattice below the fitted plane
                         (the cup is tilted, so the upright graduation curve does not
-                        apply). -dV_src/dt is the mass closure of the jet weak form.
+                        apply). DIAGNOSTIC only: wall dye-film + lensing bias it by
+                        +60-90 mL; the brink identification closes mass from
+                        V0 - V_rcv instead.
   receiver level/volume the same match with a PRECOMPUTED z_on map (the receiver is
-                        static) and the exact upright cavity-volume curve. This
-                        channel is reserved for VALIDATION: it never enters the fit.
-  jet profile           amber pixels explained by neither cup, backprojected onto the
-                        vertical plane through the spout lip, binned by world z:
-                        area-consistent width (pixel count x pixel footprint / bin
-                        height, sub-pixel after averaging) and centerline.
+                        static) and the exact upright cavity-volume curve. This V(t)
+                        is the identification's only liquid observable, and the twin
+                        comparison reads the same curve.
+
+Direct FIELD channels (free-jet silhouette widths, spout-film thickness) were built
+and defeated by this episode's optics: the through-wall jet is refraction-distorted
+by the receiver's rim band/graduations (+-40% width bulges -> negative eta), and the
+spout film has the amber body directly behind it in image space (no silhouette).
+Their extractors live in git history (40ce313); the slender-jet estimator itself
+survives as pour_weakform_identify.py's manufactured-solution selftest.
 
 Poses come from the twin's own chain (RecordedPanda: recorded joints -> hand FK ->
 TCP -> calibrated handle grasp), and the camera model is the episode's embedded
@@ -36,9 +42,9 @@ Run:
   python experiments/pour_perception.py --no-video       # observations.npz only
 
 Outputs (out/pour_wf/<episode>/):
-  observations.npz   per-frame levels, volumes, jet profiles, poses, times
-  extract_overlay.mp4  extraction proof: masks + fitted boundaries + jet bins
-  levels.png         level/volume curves + mass-balance residual
+  observations.npz   per-frame levels, volumes, poses, times
+  extract_overlay.mp4  extraction proof: masks + fitted boundaries
+  levels.png         level/volume curves + fit quality
 """
 from __future__ import annotations
 
@@ -91,8 +97,6 @@ RAY_STEPS = 64                    # samples per ray through a cup's bounding sph
 CAVITY_INSET = 0.0012             # m; require this depth inside the cavity (wall band)
 LATTICE_H = 0.0012                # m; source-cup volume lattice pitch
 LEVEL_STEP = 0.0005               # m; level-scan resolution (~4 mL on the receiver)
-JET_BIN = 0.0025                  # m; jet z-bin height
-JET_TOP_GAP = 0.008               # m below the lip where the jet window starts
 RIM_Z_WORLD = TABLE_Z + SPEC.rim_z
 SIGMA_GLYCEROL = 0.063            # N/m, 20 C (identification uses it, stored for record)
 
@@ -245,6 +249,18 @@ def build_cavity_lattice(h: float = LATTICE_H):
     return g[keep].astype(np.float64), h**3
 
 
+def rim_curve_local(spec=SPEC, half_width: float = 0.024, n: int = 33):
+    """The pouring-lip transverse profile: rim-curve points near the spout apex,
+    local frame, parametrized by y in [-half_width, half_width]. The brink
+    identification integrates the head h(y)^3 over this curve."""
+    ys = np.linspace(-half_width, half_width, n)
+    # rim curve: x on the (spout-displaced) inner sheet at z = rim
+    a_i, b_i = spec.inner_semi_axes(spec.rim_z)
+    x0 = a_i * np.sqrt(np.clip(1.0 - (ys / b_i) ** 2, 0.0, None))
+    xs = x0 + spec.spout_dx(ys, np.full_like(ys, spec.rim_z))
+    return np.stack([xs, ys, np.full_like(ys, spec.rim_z)], axis=1)
+
+
 # --------------------------------------------------------------------------------------
 # episode plumbing
 # --------------------------------------------------------------------------------------
@@ -318,8 +334,7 @@ def run(ep_dir: Path, stride: int = 1, video: bool = True, probe: bool = False,
     rec: dict[str, list] = {k: [] for k in (
         "t", "frame_idx", "cup_pos", "cup_quat", "tilt_deg", "lip",
         "src_level", "src_vol", "src_vol_loose", "src_iou",
-        "rcv_level", "rcv_vol", "rcv_iou", "n_jet_px", "film_h", "film_sina")}
-    jet_profiles = []      # per frame: (z_centers, width, chi_center, n_px)
+        "rcv_level", "rcv_vol", "rcv_iou")}
     zon_cache_pose = None
     t_start = time.time()
     n_done = 0
@@ -370,16 +385,6 @@ def run(ep_dir: Path, stride: int = 1, video: bool = True, probe: bool = False,
             rcv_vol = (SPEC.cavity_volume(rcv_level - (TABLE_Z + SPEC.floor_z))
                        if np.isfinite(rcv_level) else np.nan)
 
-            # ---- jet (free air AND through the receiver wall, pool excluded) ----------
-            jet = amber & (sat >= 0.50)
-            jet[v0:v1 + 1, u0:u1 + 1] &= ~binary_dilate(src_pred, 3)
-            jet[rv0:rv1 + 1, ru0:ru1 + 1] &= ~binary_dilate(rcv_pred, 3)
-            prof = jet_profile(cam, jet, lip, rcv_pos, rcv_level)
-            jet_profiles.append(prof)
-
-            # ---- spout film (identification channel) ----------------------------------
-            fh, fsina, _fs, fpts, fnrm = film_profile(cam, amber, p_cup, rot_cup)
-
             rec["t"].append(t_abs - t_send)      # pour clock: 0 = pour move sent
             rec["frame_idx"].append(row["frame_idx"])
             rec["cup_pos"].append(p_cup)
@@ -393,14 +398,10 @@ def run(ep_dir: Path, stride: int = 1, video: bool = True, probe: bool = False,
             rec["rcv_level"].append(rcv_level)
             rec["rcv_vol"].append(rcv_vol)
             rec["rcv_iou"].append(rcv_iou)
-            rec["n_jet_px"].append(int(prof[3].sum()))
-            rec["film_h"].append(fh)
-            rec["film_sina"].append(fsina)
 
             if probe or video:
                 img = draw_overlay(rgb, amber, src_roi, src_pred, rcv_roi, rcv_pred,
-                                   stream_band, cam, lip, prof,
-                                   film=(fpts, fnrm, fh))
+                                   stream_band, cam, lip)
                 name = (f"probe_{len(rec['t']):02d}_t{t_abs - t_send:+.2f}.png"
                         if probe else f"f_{n_done:05d}.png")
                 import imageio.v2 as imageio
@@ -411,22 +412,12 @@ def run(ep_dir: Path, stride: int = 1, video: bool = True, probe: bool = False,
                 print(f"  frame {n_done} t={t_abs - t_send:+6.2f}s "
                       f"src={src_vol * 1e6 if np.isfinite(src_vol) else -1:6.1f}mL "
                       f"rcv={rcv_vol * 1e6 if np.isfinite(rcv_vol) else -1:6.1f}mL "
-                      f"jet_px={rec['n_jet_px'][-1]:4d} [{el / n_done * 1000:.0f}ms/f]")
+                      f"[{el / n_done * 1000:.0f}ms/f]")
 
     # ---- pack + save -------------------------------------------------------------------
     n = len(rec["t"])
-    zgrid = jet_zgrid()
-    jw = np.full((n, len(zgrid)), np.nan)
-    jc = np.full((n, len(zgrid)), np.nan)
-    jn = np.zeros((n, len(zgrid)), dtype=np.int32)
-    for i, (_zc, w, chi, npx, _frame) in enumerate(jet_profiles):
-        jw[i], jc[i], jn[i] = w, chi, npx
     payload = {k: np.asarray(v) for k, v in rec.items()}
-    _, _, film_s, _, _ = film_profile(cam, np.zeros((cam.h, cam.w), bool),
-                                      rcv_pos, quat_to_mat(Q_RCV))
-    payload.update(jet_z=zgrid, jet_width=jw, jet_chi=jc, jet_npx=jn,
-                   film_s=film_s,
-                   t_send=t_send, t_ret_done=t_ret - t_send, table_z=TABLE_Z,
+    payload.update(t_send=t_send, t_ret_done=t_ret - t_send, table_z=TABLE_Z,
                    receiver_xy=np.asarray(RECEIVER_XY), sigma=SIGMA_GLYCEROL,
                    grasp_roll_deg=GRASP_ROLL_DEG, stride=stride)
     npz = out / ("observations_probe.npz" if probe else "observations.npz")
@@ -443,159 +434,15 @@ def run(ep_dir: Path, stride: int = 1, video: bool = True, probe: bool = False,
 
 
 # --------------------------------------------------------------------------------------
-# jet profile
-# --------------------------------------------------------------------------------------
-_JET_Z_LO = TABLE_Z + SPEC.floor_z + 0.008        # just above the receiver floor
-_JET_Z_HI = 0.34                                  # above any lip height in the episode
-JET_CHI_BAND = 0.014                              # m half-band about the centerline
-
-
-def jet_zgrid() -> np.ndarray:
-    return np.arange(_JET_Z_LO, _JET_Z_HI, JET_BIN)
-
-
-def jet_profile(cam: Camera, jet_mask: np.ndarray, lip: np.ndarray, rcv_pos: np.ndarray,
-                rcv_level: float):
-    """Bin jet pixels on the vertical plane through the lip toward the receiver axis.
-    Per z-bin the centerline is the median in-plane coordinate and the width is the
-    area-consistent pixel count within +-JET_CHI_BAND of it (film noise on the
-    receiver wall sits outside the band). Returns (z_centers, width_m, chi_center_m,
-    n_px) on the fixed jet_zgrid, plus the plane frame for overlay drawing."""
-    zg = jet_zgrid()
-    nz = len(zg)
-    width = np.full(nz, np.nan)
-    chi_c = np.full(nz, np.nan)
-    npx = np.zeros(nz, dtype=np.int32)
-    h_dir = rcv_pos[:2] - lip[:2]
-    nh = np.linalg.norm(h_dir)
-    h_dir = h_dir / nh if nh > 1e-6 else np.array([-1.0, 0.0])
-    frame = (lip.copy(), h_dir)
-    vs, us = np.nonzero(jet_mask)
-    if len(us) < 8:
-        return zg, width, chi_c, npx, frame
-    n_plane = np.array([-h_dir[1], h_dir[0], 0.0])       # plane normal (vertical plane)
-    d = cam.rays(np.stack([us, vs], 1).astype(np.float64))
-    denom = d @ n_plane
-    ok = np.abs(denom) > 0.2
-    s = ((lip - cam.t) @ n_plane) / np.where(ok, denom, np.nan)
-    pts = cam.t + s[:, None] * d                          # (N,3) on the jet plane
-    chi = (pts[:, :2] - lip[:2]) @ h_dir                  # in-plane horizontal coord
-    wz = pts[:, 2]
-    keep = ok & (s > 0.1) & (chi > -0.03) & (chi < 0.12)
-    z_hi = lip[2] - JET_TOP_GAP
-    z_lo = max(_JET_Z_LO, (rcv_level if np.isfinite(rcv_level) else -np.inf) + 0.008)
-    keep &= (wz > z_lo) & (wz < z_hi)
-    if keep.sum() < 8:
-        return zg, width, chi_c, npx, frame
-    chi, wz, s = chi[keep], wz[keep], s[keep]
-    px_area = (s / cam.fx) * (s / cam.fy)                 # m^2 footprint per pixel
-    bins = np.clip(((wz - _JET_Z_LO) / JET_BIN).astype(int), 0, nz - 1)
-    for b in np.unique(bins):
-        m = bins == b
-        if m.sum() < 3:
-            continue
-        med = np.median(chi[m])
-        band = m & (np.abs(chi - med) < JET_CHI_BAND)
-        if band.sum() < 3:
-            continue
-        npx[b] = int(band.sum())
-        width[b] = float(px_area[band].sum() / JET_BIN)
-        chi_c[b] = float(np.median(chi[band]))
-    return zg, width, chi_c, npx, frame
-
-
-# --------------------------------------------------------------------------------------
-# spout film (the identification channel): depth profile along the spout substrate
-# --------------------------------------------------------------------------------------
-N_FILM = 6                 # stations along the spout, ending at the lip
-FILM_DS = 0.003            # local-z spacing between stations (m)
-FILM_MAX_H = 0.030         # march this far along the surface normal (m)
-
-
-def film_substrate(spec=SPEC, n: int = N_FILM, ds: float = FILM_DS):
-    """Local-frame substrate points along the spout channel bottom (y=0): the inner
-    wall sheet x = a_i(z) + spout_dx(0, z), from `n-1` stations below the rim up to
-    the lip. Returns (points (n,3), downstream unit tangents (n,3)) in the cup frame."""
-    zs = SPEC.rim_z - ds * np.arange(n - 1, -1, -1)
-    a_i, _ = spec.inner_semi_axes(zs)
-    xs = a_i + spec.spout_dx(np.zeros_like(zs), zs)
-    pts = np.stack([xs, np.zeros_like(zs), zs], axis=1)
-    tang = np.gradient(pts, axis=0)
-    tang /= np.linalg.norm(tang, axis=1, keepdims=True)
-    return pts, tang
-
-
-def film_profile(cam: Camera, amber: np.ndarray, pos, rot):
-    """Film depth h_k at each spout station: from the substrate point, march along the
-    in-plane upward normal (world), project to pixels, and take the farthest amber
-    run. Returns (h (n,), sin_alpha (n,), s_arc (n,)): depths, descent sines of the
-    substrate tangent, and arc positions (m, downstream positive, lip = 0)."""
-    pts_l, tang_l = film_substrate()
-    pts = pts_l @ rot.T + np.asarray(pos)
-    tang = tang_l @ rot.T
-    tang /= np.linalg.norm(tang, axis=1, keepdims=True)
-    # flow goes downhill along +-tangent: pick the direction with negative descent
-    down = np.where((tang[:, 2] < 0)[:, None], tang, -tang)
-    sin_a = -down[:, 2]
-    # in-plane upward normal: remove vertical from z-hat, orthogonalize to tangent
-    zhat = np.array([0.0, 0.0, 1.0])
-    nrm = zhat - down * down[:, 2:3]
-    nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-9)
-    h = np.full(len(pts), np.nan)
-    steps = np.arange(0.0, FILM_MAX_H, 0.0004)
-    for k in range(len(pts)):
-        line = pts[k] + steps[:, None] * nrm[k]
-        uv, z = cam.project(line)
-        ok = z > 0.05
-        uu = np.round(uv[:, 0]).astype(int)
-        vv = np.round(uv[:, 1]).astype(int)
-        ok &= (uu >= 0) & (uu < cam.w) & (vv >= 0) & (vv < cam.h)
-        hit = np.zeros(len(steps), bool)
-        hit[ok] = amber[vv[ok], uu[ok]]
-        if not hit.any():
-            h[k] = 0.0
-            continue
-        # farthest amber with a tolerance for a 2-sample specular gap
-        idx = np.where(hit)[0]
-        runs = np.split(idx, np.where(np.diff(idx) > 3)[0] + 1)
-        top = runs[0]
-        for r in runs[1:]:
-            if r[0] - top[-1] <= 8:
-                top = np.concatenate([top, r])
-            else:
-                break
-        h[k] = steps[top[-1]]
-    s_arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0),
-                                                            axis=1))])
-    return h, sin_a, s_arc - s_arc[-1], pts, nrm
-
-
-def rim_curve_local(spec=SPEC, half_width: float = 0.024, n: int = 33):
-    """The pouring-lip transverse profile: rim-curve points near the spout apex,
-    local frame, parametrized by y in [-half_width, half_width]."""
-    ys = np.linspace(-half_width, half_width, n)
-    # rim curve: x on the (spout-displaced) inner sheet at z = rim
-    a_i, b_i = spec.inner_semi_axes(spec.rim_z)
-    x0 = a_i * np.sqrt(np.clip(1.0 - (ys / b_i) ** 2, 0.0, None))
-    xs = x0 + spec.spout_dx(ys, np.full_like(ys, spec.rim_z))
-    return np.stack([xs, ys, np.full_like(ys, spec.rim_z)], axis=1)
-
-
-# --------------------------------------------------------------------------------------
 # overlay / plots
 # --------------------------------------------------------------------------------------
-def binary_dilate(mask: np.ndarray, it: int) -> np.ndarray:
-    from scipy.ndimage import binary_dilation
-    return binary_dilation(mask, iterations=it)
-
-
 def mask_boundary(mask: np.ndarray) -> np.ndarray:
     from scipy.ndimage import binary_erosion
     return mask & ~binary_erosion(mask)
 
 
 def draw_overlay(rgb, amber, src_roi, src_pred, rcv_roi, rcv_pred, stream_band,
-                 cam: Camera, lip, prof, film=None):
+                 cam: Camera, lip):
     img = rgb.copy()
     img[amber] = (0.65 * img[amber] + 0.35 * np.array([255, 255, 0])).astype(np.uint8)
     u0, u1, v0, v1 = src_roi
@@ -610,36 +457,12 @@ def draw_overlay(rgb, amber, src_roi, src_pred, rcv_roi, rcv_pred, stream_band,
         u, v = round(uv[0, 0]), round(uv[0, 1])
         if 2 <= u < cam.w - 2 and 2 <= v < cam.h - 2:
             img[v - 2:v + 3, u - 2:u + 3] = (0, 255, 0)
-    _zc, w, chi, npx, (origin, h_dir) = prof
-    good = np.isfinite(w) & (npx > 2)
-    if good.any():
-        # mark measured jet bins: project centerline and +- w/2 edges into the image
-        for sign in (-0.5, 0.0, 0.5):
-            x = chi[good] + sign * w[good]
-            pts = np.stack([origin[0] + x * h_dir[0], origin[1] + x * h_dir[1],
-                            _zc[good]], axis=1)
-            uv, z = cam.project(pts)
-            ok = z > 0
-            uu = np.round(uv[ok, 0]).astype(int).clip(0, cam.w - 1)
-            vv = np.round(uv[ok, 1]).astype(int).clip(0, cam.h - 1)
-            img[vv, uu] = (0, 255, 60) if sign else (255, 40, 40)
-    if film is not None:
-        fpts, fnrm, fh = film
-        for base, nrm, hk in zip(fpts, fnrm, fh, strict=True):
-            for p, col in ((base, (40, 90, 255)),
-                           (base + (hk if np.isfinite(hk) else 0.0) * nrm,
-                            (255, 255, 255))):
-                uv, z = cam.project(p[None, :])
-                if z[0] > 0:
-                    u, v = round(uv[0, 0]), round(uv[0, 1])
-                    if 1 <= u < cam.w - 1 and 1 <= v < cam.h - 1:
-                        img[v - 1:v + 2, u - 1:u + 2] = col
     return np.ascontiguousarray(np.rot90(img, k=-1))
 
 
 def plot_levels(p: dict, path: Path):
     t = p["t"]
-    fig, axes = plt.subplots(3, 1, figsize=(9, 9), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(9, 7), sharex=True)
     ax = axes[0]
     ax.plot(t, p["src_vol"] * 1e6, label="source volume, deep fit [mL]",
             color="tab:orange")
@@ -656,10 +479,6 @@ def plot_levels(p: dict, path: Path):
     ax.plot(t, p["rcv_iou"], label="receiver fit IoU", color="tab:blue")
     ax.plot(t, p["tilt_deg"] / 100, "--", color="grey", label="tilt/100 [deg]")
     ax.set_ylabel("quality")
-    ax.legend()
-    ax.grid(alpha=0.3)
-    ax = axes[2]
-    ax.plot(t, p["n_jet_px"], color="tab:green", label="jet pixels")
     ax.set_xlabel("t - t_send [s]")
     ax.legend()
     ax.grid(alpha=0.3)

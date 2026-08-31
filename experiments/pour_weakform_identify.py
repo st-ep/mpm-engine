@@ -1,43 +1,36 @@
-"""Closed-form weak-form viscosity identification from the observed pour jet.
+"""Closed-form weak-form viscosity identification from a recorded pour.
 
-The paper's estimator, realized on the pour: the momentum balance of the observed
-free jet, imposed in weak form and solved as ONE convex least squares. No simulator
-is run, differentiated, or iterated anywhere in the fit.
+Primary channel (the one used on ep0001): the TIME-WEAK brink lubrication balance --
+see the block comment above brink_forcing. The measured receiver curve V(t), the cup
+pose chain, and the caliper rim geometry close
 
-Physics (slender viscous jet, Trouton; world z ascending, flow downward, speed u>0):
+    V(t) - V(t0) = (1/eta) INT F dt',   F = (rho g / 3) sin(a(t)) INT h(y,t)^3 dy
+
+which is linear in 1/eta and solved as ONE robust convex least squares. No simulator
+is run, differentiated, or iterated anywhere in the fit, and no derivative of data
+is ever taken.
+
+Also here, gated by a manufactured solution (--selftest): the slender viscous jet
+weak form. Physics (Trouton; world z ascending, flow downward, speed u > 0):
     mass       A_t + d(Au)/ds = 0
     momentum   rho (u_t + u u_s) = rho g gamma - sigma k_s + 3 eta (A u_s)_s / A
-with s the downward arc length (d/ds = -gamma d/dz, gamma = cos of the centerline to
-vertical), A the cross-section area, k ~ 1/R - R_ss the slender mean curvature. For a
-Bingham liquid in uniaxial extension the deviatoric axial stress is
-3 eta e + sqrt(3) tau_y (e = u_s > 0), so tau_y enters linearly next to eta and the
-same solve reports whether the pour determines it (glycerol: it should return ~0).
-
-Weak form: multiply by A phi(z), integrate over a window with phi -> 0 at both ends;
-the viscous and capillary terms integrate by parts (no third derivatives touch data):
-    b_row      = INT [rho A u_t / gamma - rho A u u_z - rho g A] phi dz
-                 + sigma INT k (A_z phi + A phi_z) dz
-    c_eta_row  = -3 INT A gamma u_z phi_z dz
-    c_tau_row  = sqrt(3) INT A phi_z dz
-    b = c_eta * eta (+ c_tau * tau_y)      -> least squares over (frames x tests)
-
-Kinematics are observation-only:
-    A(z,t)     from the extracted silhouette width (near-circular section in the
-               fitted window; the ribbon-like top near the lip is excluded)
-    u(z,t)     mass conservation: u = G/A with the flux G anchored in the jet's own
-               lower BALLISTIC segment (d(u^2)/ds = 2 g gamma is linear in Q^2 given
-               A -- one more closed-form least squares), corrected for the observed
-               dA/dt. Neither cup's level enters the fit: the source volume rate and
-               the receiver transfer curve stay untouched as validation channels.
+multiplied by A phi(z) and integrated with phi -> 0 at both ends, so the viscous and
+capillary terms integrate by parts and no third derivative touches data; per frame
+the joint (Q^2, eta*Q) solve is one 2-parameter least squares. The real-data jet and
+spout-film extraction was removed from pour_perception.py -- ep0001's optics defeat
+it (through-wall refraction distorts the jet widths, the film has no silhouette; the
+extractors live in git history, 40ce313) -- so the estimator remains here purely as
+the selftest target: the recovery gate shows the method is sound where the fields
+are observable.
 
 Run:
+  python experiments/pour_weakform_identify.py               # brink fit on ep0001
+  python experiments/pour_weakform_identify.py --t-fit 2.6 3.6
   python experiments/pour_weakform_identify.py --selftest    # manufactured solution
-  python experiments/pour_weakform_identify.py               # fit ep0001 + sweeps
-  python experiments/pour_weakform_identify.py --t-window 1.9 2.6
 
 Outputs (out/pour_wf/<episode>/):
-  identify.json      eta_hat, CI, Bingham fit, window sweeps, diagnostics
-  identify.png       profiles, residuals, prefix/window sweeps
+  identify.json      eta_hat, CI, V0 scan, prefix sweep, diagnostics
+  identify.png       fit, forcing, residuals, prefix sweep
 """
 from __future__ import annotations
 
@@ -649,176 +642,19 @@ def plot_brink_integrated(o, eta, keep, dV, cF, res, path: Path):
     plt.close(fig)
 
 
-def plot_brink(X, Y, keep, eta, diag, res, path: Path):
-    fig, axes = plt.subplots(2, 2, figsize=(11, 8))
-    ax = axes[0, 0]
-    ax.plot(diag["t"], diag["Q"], ".-", ms=3, label="Q = dV_rcv/dt [mL/s]")
-    ax.plot(diag["t"], np.asarray(diag["h_tip"]) * 1e3, ".-", ms=3,
-            label="head at the brink [mm]")
-    ax.plot(diag["t"], 100 * np.asarray(diag["sina"]), "--",
-            label="100 sin(alpha)")
-    ax.set_xlabel("t - t_send [s]")
-    ax.legend()
-    ax.grid(alpha=0.3)
-    ax = axes[0, 1]
-    ax.plot(X[keep], Y[keep], ".", ms=4, alpha=0.6)
-    ax.plot(X[~keep], Y[~keep], "x", ms=4, color="tab:red", alpha=0.5)
-    xx = np.linspace(0, max(X.max(), 1e-9), 10)
-    ax.plot(xx, eta * xx, "k-", lw=1, label=f"eta = {eta:.3f} Pa.s")
-    ax.set_xlabel("viscous row  3 q / h^2")
-    ax.set_ylabel("gravity - inertia row")
-    ax.legend()
-    ax.grid(alpha=0.3)
-    ax = axes[1, 0]
-    r = Y - eta * X
-    ax.plot(np.asarray(diag["t"]), np.full(len(diag["t"]), np.nan))  # frame axis
-    ax.scatter(np.repeat(np.asarray(diag["t"]), 0), [])
-    ax.hist(r[keep], bins=24, alpha=0.8)
-    ax.set_xlabel("row residual")
-    ax.grid(alpha=0.3)
-    ax = axes[1, 1]
-    pre = res.get("prefix_sweep", [])
-    if pre:
-        tt = [p["t_hi"] for p in pre]
-        ee = [p["eta"] for p in pre]
-        ss = [p["se"] for p in pre]
-        ax.errorbar(tt, ee, yerr=ss, fmt="o-", ms=3, lw=1, capsize=2)
-        ax.axhline(eta, color="k", lw=0.8, ls=":")
-        ax.axhline(1.41, color="tab:green", lw=0.8, ls="--",
-                   label="Segur-Oberstar 20 C")
-        ax.set_xlabel("fit uses data up to t [s]")
-        ax.set_ylabel("eta [Pa.s]")
-        ax.set_title("identification vs data seen")
-        ax.legend()
-        ax.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(path, dpi=130)
-    plt.close(fig)
-
-
-# --------------------------------------------------------------------------------------
-# real-data driver
-# --------------------------------------------------------------------------------------
-def run(episode: str, t_window, window, n_tests: int):
-    out = OUT_ROOT / episode
-    obs = dict(np.load(out / "observations.npz"))
-    fr = condition(obs, tuple(t_window))
-    sol = solve_all(fr, tuple(window), n_tests)
-    eta, se, keep = sol["eta"], sol["se"], sol["keep"]
-    b, c = sol["b"], sol["c"]
-    th, cov = sol["bingham"]
-    # diagnostics: viscous share of the weak-form balance
-    share = float(np.median(np.abs(eta * c[keep])
-                            / np.maximum(np.abs(b[keep] - eta * c[keep])
-                                         + np.abs(eta * c[keep]), 1e-12)))
-    res = dict(
-        eta=eta, eta_se=se, rows=len(b), rows_kept=int(keep.sum()),
-        eta_frames_median=float(np.nanmedian(sol["eta_frames"])),
-        bingham_eta=float(th[0]), bingham_tau_y=float(th[1]),
-        bingham_tau_y_sd=float(np.sqrt(cov[1, 1])), bingham_cov=cov.tolist(),
-        viscous_share=share,
-        Q_median_mLps=float(np.nanmedian(sol["Q"]) * 1e6),
-        frames_used=int(np.isfinite(sol["Q"]).sum()),
-        t_window=list(t_window), window=list(window),
-    )
-
-    # ---- sweeps: temporal prefix and spatial window ---------------------------------
-    prefix = []
-    t_on = float(t_window[0])
-    for t_hi in np.arange(t_on + 0.3, t_window[1] + 1e-9, 0.1):
-        try:
-            frp = condition(obs, (t_on, float(t_hi)))
-            sp = solve_all(frp, tuple(window), n_tests)
-            prefix.append(dict(t_hi=float(t_hi), eta=sp["eta"], se=sp["se"],
-                               rows=int(sp["keep"].sum())))
-        except SystemExit:
-            continue
-    res["prefix_sweep"] = prefix
-
-    windows = []
-    for bot, top in ((0.010, 0.010), (0.015, 0.012), (0.020, 0.015), (0.030, 0.020),
-                     (0.015, 0.030), (0.040, 0.010)):
-        try:
-            sw = solve_all(fr, (bot, top), n_tests)
-        except SystemExit:
-            continue
-        windows.append(dict(bot=bot, top=top, eta=sw["eta"], se=sw["se"],
-                            rows=int(sw["keep"].sum())))
-    res["window_sweep"] = windows
-
-    (out / "identify.json").write_text(json.dumps(res, indent=2))
-    print(json.dumps({k: v for k, v in res.items()
-                      if k not in ("prefix_sweep", "window_sweep", "bingham_cov")},
-                     indent=2))
-    print(f"prefix sweep: {len(prefix)} points | window sweep: {len(windows)} points")
-    plot(fr, sol["Q"], b, c, keep, eta, res, out / "identify.png")
-    print("wrote", out / "identify.json", "and", out / "identify.png")
-    return res
-
-
-def plot(fr: Frames, Qs, b, ce, keep, eta, res, path: Path):
-    fig, axes = plt.subplots(2, 2, figsize=(11, 8))
-    ax = axes[0, 0]
-    step = max(1, len(fr.t) // 12)
-    for f in range(0, len(fr.t), step):
-        ax.plot(fr.R[f] * 1e3, fr.z * 1e3, lw=0.8)
-    ax.set_xlabel("jet radius [mm]")
-    ax.set_ylabel("world z [mm]")
-    ax.set_title("observed jet profiles")
-    ax.grid(alpha=0.3)
-    ax = axes[0, 1]
-    ax.plot(fr.t, Qs * 1e6, ".", ms=3)
-    ax.set_xlabel("t - t_send [s]")
-    ax.set_ylabel("flux Q [mL/s] (ballistic anchor)")
-    ax.grid(alpha=0.3)
-    ax = axes[1, 0]
-    ax.plot(ce[keep], b[keep], ".", ms=4, alpha=0.6)
-    ax.plot(ce[~keep], b[~keep], "x", ms=4, color="tab:red", alpha=0.5)
-    xx = np.linspace(min(ce.min(), 0), max(ce.max(), 0), 10)
-    ax.plot(xx, eta * xx, "-", color="k", lw=1,
-            label=f"eta = {eta:.3f} Pa.s")
-    ax.set_xlabel("viscous row  c_eta")
-    ax.set_ylabel("inertia+gravity+capillary row  b")
-    ax.legend()
-    ax.grid(alpha=0.3)
-    ax = axes[1, 1]
-    pre = res.get("prefix_sweep", [])
-    if pre:
-        tt = [p["t_hi"] for p in pre]
-        ee = [p["eta"] for p in pre]
-        ss = [p["se"] for p in pre]
-        ax.errorbar(tt, ee, yerr=ss, fmt="o-", ms=3, lw=1, capsize=2)
-        ax.axhline(eta, color="k", lw=0.8, ls=":")
-        ax.set_xlabel("fit uses data up to t [s]")
-        ax.set_ylabel("eta [Pa.s]")
-        ax.set_title("identification vs data seen (prefix sweep)")
-        ax.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(path, dpi=130)
-    plt.close(fig)
-
-
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--episode", default="ep0001")
-    ap.add_argument("--selftest", action="store_true")
-    ap.add_argument("--jet", action="store_true",
-                    help="run the slender-jet channel (documented as optically "
-                         "distorted on ep0001; the selftest validates the estimator)")
-    ap.add_argument("--t-window", type=float, nargs=2, default=(1.75, 3.30),
-                    help="jet channel: pour-clock frame window (s after t_send)")
-    ap.add_argument("--window", type=float, nargs=2, default=(0.015, 0.012),
-                    help="jet channel: weak-form margins (above pool, below lip) (m)")
-    ap.add_argument("--n-tests", type=int, default=5)
+    ap.add_argument("--selftest", action="store_true",
+                    help="manufactured-solution gate for the slender-jet estimator")
     ap.add_argument("--v0-ml", type=float, default=300.0,
                     help="initial fill (the protocol's metered 300 mL)")
-    ap.add_argument("--t-fit", type=float, nargs=2, default=(2.3, 4.6),
-                    help="brink channel: pour-clock row window (s after t_send)")
+    ap.add_argument("--t-fit", type=float, nargs=2, default=(2.6, 3.6),
+                    help="pour-clock fit window (s after t_send); the default is "
+                         "the quasi-steady mid-drain (early = slosh, late = "
+                         "flight/film-drain)")
     args = ap.parse_args()
     if args.selftest:
         selftest()
         sys.exit(0)
-    if args.jet:
-        run(args.episode, args.t_window, args.window, args.n_tests)
-    else:
-        run_brink(args.episode, args.v0_ml, args.t_fit)
+    run_brink(args.episode, args.v0_ml, args.t_fit)
