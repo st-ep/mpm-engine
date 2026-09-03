@@ -108,6 +108,16 @@ BOUND_CELLS = 3
 NCLAW_GRID_SEMANTICS = {"freeslip_bound": BOUND_CELLS, "mass_eps": 1.0e-7,
                         "empty_node_gravity": True, "mls_transfer": True,
                         "particle_clip_cells": 0.5}
+
+# particle_clip_cells above is right for every env/blob/*.yaml EXCEPT the
+# mesh-shape scenes, which override clip_bound per NCLaw's own configs:
+# bunny.yaml, blub.yaml and spot.yaml set it to ${sim.bound} (BOUND_CELLS at
+# both the low and high quality presets we use), armadillo.yaml fixes it at 1.
+# Missing this made the shape scenes rest against a clip 6x looser than
+# NCLaw's, which is why they were the one axis where truth-theta rollouts
+# diverged hard from NCLaw's own trajectory even with the correct law.
+NCLAW_SHAPE_CLIP_BOUND = {"bunny": BOUND_CELLS, "blub": BOUND_CELLS,
+                          "spot": BOUND_CELLS, "armadillo": 1.0}
 T_END = 0.5                                     # 1000 steps of dt 5e-4
 N_FRAMES = 125                                  # our dump cadence, 4 ms
 CENTER = np.array([0.5, 0.5, 0.5])
@@ -442,6 +452,10 @@ def run_scene(material: str, shape: str, out_path: Path, theta: dict | None = No
         # their sim/low.yaml (grid 20) sets 1e-7; high and super set 0.0, so
         # the epsilon follows the trajectory's grid rather than a constant
         kw_bc["mass_eps"] = 1.0e-7 if n_grid == 20 else 0.0
+        # a compare.py scene label like "shape_bunny" has that prefix stripped
+        # to match NCLAW_SHAPE_CLIP_BOUND's bare shape-name keys
+        kw_bc["particle_clip_cells"] = NCLAW_SHAPE_CLIP_BOUND.get(
+            shape.removeprefix("shape_"), 0.5)
         if isinstance(nclaw_bc, dict):
             kw_bc.update(nclaw_bc)
         s.set_grid_semantics(**kw_bc)
