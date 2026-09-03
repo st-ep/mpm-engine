@@ -40,7 +40,9 @@ Code structure overview:
   colliders, restricted launches, active-block compute, CUDA graphs.
 - `materials/`: composable presets (`newtonian`, `granular`, `elastic`, `vonmises`,
   `dough`, tabulated laws).
-- `geometry/`: watertight mesh to SDF (winding-number sign), cached; cup meshes.
+- `geometry/`: watertight mesh to SDF (winding-number sign), cached; cup meshes;
+  `measuring_cup.py`, the measured 500 mL cup of the hardware pour (elliptical taper,
+  spout and handle; analytic collision field, masks, fill and the cavity-volume curve).
 - `colliders/glass.py`: analytic revolved glass profile, cavity/solid masks, leak
   projection.
 - `coupling/`: contact-wrench readouts based on accumulated grid impulse or a stress
@@ -53,8 +55,9 @@ Code structure overview:
   composite offscreen rendering of arm + glasses + particles.
 - `src/ident/`, `src/common/`: the warp-free EUCLID identification stack (weak-form
   constitutive recovery); an import-boundary test keeps it free of warp/torch.
-- `examples/`: scripts for pouring, force-feedback pressing, gripper shaping, squeeze
-  identification, a wrist-FT cross-check, shear-cell rheology, and surface rendering.
+- `examples/`: scripts for pouring, a recorded-pour twin, force-feedback pressing,
+  gripper shaping, squeeze identification, a wrist-FT cross-check, shear-cell rheology,
+  and surface rendering.
   Shared helpers are in `examples/common.py`, and constitutive-recovery examples are in
   `examples/recovery/`. See `examples/README.md`.
 - `experiments/`: the paper studies and figure scripts, kept runnable for
@@ -78,7 +81,9 @@ subprocess (`--render-only`), with frames split across parallel workers.
 
 ## Performance
 
-Measured on the 192^3 honey pour (340k particles, 432 substeps/frame, GH200):
+Measured on the 192^3 honey pour as of the optimization pass (the Genesis-glass scene,
+340k particles, 432 substeps/frame, GH200; the example since moved to the measured
+500 mL cup, about 58k particles at 192^3, so absolute ms/frame are lower today):
 
 | stage | sim ms/frame |
 | --- | --- |

@@ -46,6 +46,15 @@ material class.
 
     .venv/bin/python -m experiments.fe_ls report --material all
 
+pour, the recorded hardware pour. One side video and the Franka joint log of a
+glycerol pour from the measured 500 mL cup give the receiver curve by the cup's own
+graduations, a viscosity from the time-weak brink lubrication balance (ep0001:
+3.03 Pa.s, 1.7 percent statistical and 14 percent for the fill tolerance), a twin at
+that value at -2.1 percent of the real transfer, and a hold-time table for metering
+100 to 160 mL. The episodes live outside the repository under `pouring_real_data/`.
+
+    .venv/bin/python -m experiments.pour.pour_weakform_identify
+
 ## Stages, per campaign
 
 | campaign | stages |
@@ -55,6 +64,7 @@ material class.
 | `robotics.<name>` | one module per leg, see `robotics/__init__.py` |
 | `diffsim` | validate, landscape, fit, refine, ls, report |
 | `fe_ls` | identify, rollout, report |
+| `pour.<name>` | one module per stage: calibrate_geometry, perception, weakform_identify, validate, hold_sweep; see `pour/__init__.py` |
 
 Each campaign's `__init__.py` carries its own numbers, artifact paths and the
 limits of what it measured. `elastic/README.md` additionally records the

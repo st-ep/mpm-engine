@@ -4,6 +4,24 @@
 
 ### Added
 
+- The hardware pour. `geometry/measuring_cup.py` is the measured 500 mL measuring
+  cup as a parametric solid (elliptical taper, spout and handle from calipers; an
+  analytic collision field with the exact cavity inside an outward-thickened wall;
+  masks, fill and the cavity-volume curve its graduations realize).
+  `examples/pour_franka.py` now pours that cup with the Genesis action; the
+  Genesis-glass version with the `--glass cdf` comparison is in history at commit
+  592b60b, `--cfl` is kept, and the numbers in docs/performance.md are marked as
+  measured on the Genesis-glass scene.
+  `examples/pour_recorded_twin.py` replays a recorded Franka joint log through
+  forward kinematics and pours glycerol from the cup. The `experiments/pour`
+  campaign reads the receiver level from the side video by the cup's own
+  graduations, identifies the viscosity by the time-weak brink lubrication balance
+  (ep0001: 3.03 Pa.s, 1.7 percent statistical, 14 percent for the 10 mL fill
+  tolerance), runs the twin at that value (95.2 mL against 97.2 mL real, -2.1
+  percent, first landed liquid two frames after the real onset) and tabulates the
+  hold time at the roll's end pose for 100 to 160 mL. The recorded episodes are not
+  in the repository.
+
 - A claymore-style tiled P2G scatter was built, verified, and measured:
   2.6x on the CPU p2g phase, 0.63x to 0.93x on the GH200, where L2-native
   atomics already absorb the plain scatter. Removed from this branch as a

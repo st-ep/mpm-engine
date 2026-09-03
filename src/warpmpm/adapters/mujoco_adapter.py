@@ -220,9 +220,15 @@ class FrankaArm:
 
 
 class PandaPour(FrankaArm):
-    """Scripted Franka POUR kinematics and cup grasp transform. The held glass's 
-    pose is the fixed handle-grasp transform applied to the hand FK; drive the 
-    MPM cup collider with cup_pose_at(t).
+    """Scripted Franka POUR kinematics + the cup grasp transform. The robot ACTION is
+    still the companion Genesis (SPH) study's Panda joint trajectory (FK bit-identical
+    between this Menagerie panda and Genesis's panda.xml, verified at the upright /
+    80% / full pour configs); the held CUP is the measured 500 mL measuring cup
+    (geometry.measuring_cup, the real cup of the hardware pouring experiment), so the
+    grasp constants below are the cup's own handle in its spec frame (origin on the
+    ellipse axis, z = 0 at the external base, +x toward the spout). The held cup's
+    pose is this fixed handle-grasp transform applied to the hand FK; drive the MPM
+    collider with cup_pose_at(t).
 
     Default action: smoothstep joint interpolation upright -> POUR_POSE_FRACTION of the
     full-pour config over TILT_SECONDS, then back over RETURN_SECONDS. The default
@@ -240,10 +246,16 @@ class PandaPour(FrankaArm):
     TILT_SECONDS = 3.0
     RETURN_SECONDS = 1.6
     BASE_POS = (-0.15, 0.0, 0.0)
-    TCP_LOCAL = np.array([0.0, 0.0, 0.092])       # tool centre point in the hand frame
-    GRASP_LOCAL = np.array([-0.149, 0.0, 0.055])  # grasped handle point in the cup frame
-    # cup axes expressed in hand axes (fixed grasp): cup z along hand x, cup x along -hand z
-    CUP_TO_HAND = np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])
+    TCP_LOCAL = np.array([0.0, 0.0, 0.092])        # tool centre point in the hand frame
+    # grasp point: mid-height of the measured cup's handle column (column centreline
+    # x = -86.3 mm, grip z = 60 mm in the cup spec frame)
+    GRASP_LOCAL = np.array([-0.0863, 0.0, 0.060])
+    # cup axes in hand axes: the Genesis grasp composed with Rz(-phi*), phi* = -6.65 deg
+    # = the downhill azimuth of the tilt at peak (FK-measured; it wanders only -11 to
+    # -6.6 deg over the active tilt), so the spout (+x cup) points where the pour goes
+    CUP_TO_HAND = np.array([[0.0, -0.11579915, 0.99327265],
+                            [0.0, 0.99327265, 0.11579915],
+                            [-1.0, 0.0, 0.0]])
 
     def __init__(self, height: int = 480, width: int = 640, max_geom: int = 30000,
                  glass_mesh=None, glass_rgba=(0.76, 0.92, 1.0, 0.30),
