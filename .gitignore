@@ -14,3 +14,14 @@ pouring_real_data/
 particles/
 docs/pour_pipeline_ep0001.*
 docs/figs/
+
+# internal papers and documents are never shared through this repository
+paper/
+*.pdf
+*.tex
+*.bbl
+*.aux
+*.out
+*.synctex.gz
+*.docx
+*.pptx
