@@ -11,5 +11,6 @@ out/
 .DS_Store
 STEPAN_NOTES.md
 pouring_real_data/
+particles/
 docs/pour_pipeline_ep0001.*
 docs/figs/
