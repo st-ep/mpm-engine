@@ -19,9 +19,9 @@ Kinematic chain (verified against ep0001):
 Scene constants measured from the episode's side camera (embedded AprilTag extrinsics,
 1.8 mm / 0.36 deg residuals):
   tabletop      z = -0.063 m in the robot base frame (the base sits on a riser)
-  receiver      the same 500 mL measuring-cup model, at the amber-liquid centroid of the
-                settled end frame (ep0001: x=0.278, y=-0.032), spout toward -x
-Both are nominal-calibration stage-1 values; --table-z / --receiver-xy override.
+  receiver      the same 500 mL measuring-cup model, at the rim-ellipse fit of the
+                pre-pour depth cloud (ep0001: x=0.2934, y=-0.0230), spout toward -x
+experiments/pour_calibrate_geometry.py reproduces both; --table-z / --receiver-xy override.
 
 Glycerol: eta defaults to the 20 C literature value 1.41 Pa.s; temperature and absorbed
 water move it by ~2x, so treat it as a prior, not truth (the ep0001 weak-form fit in
@@ -33,11 +33,15 @@ Run:
   python examples/pour_recorded_twin.py                       # ep0001, 192^3, video
   python examples/pour_recorded_twin.py --fast --skip-video   # 96^3 smoke
   python examples/pour_recorded_twin.py --episode pouring_real_data/ep0002
+  python examples/pour_recorded_twin.py --eta 3.03 --hold 1.5 --skip-video
+      # planning: the recorded roll, then the cup HELD at its end pose for 1.5 s (the
+      # robot's dwell_s), then the recorded return. Writes to <episode>_hold1.5_eta3.03/.
 
 Outputs (out/pour_recorded_twin/<episode>/):
   twin.mp4           composite MuJoCo render from the real side camera's viewpoint
   side_by_side.mp4   real side-camera video (rotated upright) | twin render, time-locked
-  metrics.csv        per-frame counts/fractions, tilt, wrenches, level volumes, leak audit
+  metrics.csv        per-frame counts/fractions (n_rcv_pool = landed, below the 30 mL
+                     graduation), tilt, wrenches, level volumes, leak audit
   metrics.png        transfer/level/wrench/audit plots
   final_n*.npz       end-state particles
   settled_n*.npz     cached settled fill (delete or --rebake to refresh)
@@ -77,6 +81,11 @@ REPO = Path(__file__).resolve().parents[1]
 OUT_ROOT = REPO / "out" / "pour_recorded_twin"
 
 SPEC = MeasuringCupSpec()
+# landed liquid: receiver-cavity particles below the cup's 30 mL graduation, the floor
+# region whose pixels pour_perception.py watches for the real onset (same definition)
+POOL_ML = 30.0
+_depths = np.linspace(0.0, 0.03, 301)
+POOL_DEPTH = float(np.interp(POOL_ML * 1e-6, [SPEC.cavity_volume(d) for d in _depths], _depths))
 # receiver: 180 deg about z -- spout toward -x, handle toward +x, matching the video
 Q_RCV = np.array([0.0, 0.0, 0.0, 1.0])
 # eta: Segur & Oberstar 1951, pure glycerol at 20 C (see module docstring); --eta overrides
@@ -153,7 +162,8 @@ def load_episode(ep_dir: Path, pre_roll: float, hold: float) -> dict:
     meta = json.loads((ep_dir / "meta.json").read_text())
     return dict(
         t0=t0, duration=t1 - t0, t_ref=pour["t_send"] - t0,
-        t_pour=pour["t_send"] - t0, t_return_done=ret["t_ack"] - t0,
+        t_pour=pour["t_send"] - t0, t_hold=pour["t_ack"] - t0,
+        t_return_done=ret["t_ack"] - t0,
         ts=ts - t0, qs=np.asarray(qs), widths=np.asarray(ws), meta=meta,
     )
 
@@ -189,17 +199,20 @@ class RecordedPanda(FrankaArm):
 
     def __init__(self, ep: dict, glass_mesh: Path, height: int = 848, width: int = 480,
                  max_geom: int = 360000, cup_shift_xy=CUP_SHIFT_XY,
-                 grasp_roll_deg: float = GRASP_ROLL_DEG):
+                 grasp_roll_deg: float = GRASP_ROLL_DEG, hold: float = 0.0):
         self._glass_mesh = str(glass_mesh)
         self._glass_rgba = CUP_RGBA
         self._ts, self._qs, self._ws = ep["ts"], ep["qs"], ep["widths"]
+        # planning variant: freeze the joint track at the roll's end pose (the pour
+        # move's ack) for `hold` seconds, then continue with the recorded return
+        self._hold, self._t_hold = float(hold), float(ep["t_hold"])
         super().__init__(height=height, width=width, base_pos=(0.0, 0.0, 0.0),
                          max_geom=max_geom, sphere_detail=(8, 6))
         self._glass_mocap = {}
         for nm in ("glass_src", "glass_rcv"):
             bid = self.mj.mj_name2id(self.model, self.mj.mjtObj.mjOBJ_BODY, nm)
             self._glass_mocap[nm] = int(self.model.body_mocapid[bid])
-        self.duration = float(ep["duration"])
+        self.duration = float(ep["duration"]) + self._hold
         # constant hand->cup rotation from the insertion at the reference tick: the
         # nominal upright/spout(-x) pose, drooped by the calibrated grasp roll about
         # the world tilt axis (the pivot is the pinch point, which GRASP_LOCAL is)
@@ -236,6 +249,8 @@ class RecordedPanda(FrankaArm):
         self.data.mocap_quat[mid] = np.asarray(quat, dtype=np.float64)
 
     def joints_at(self, t: float) -> tuple[np.ndarray, float]:
+        if self._hold > 0.0 and t > self._t_hold:
+            t = max(self._t_hold, t - self._hold)
         t = float(np.clip(t, self._ts[0], self._ts[-1]))
         q = np.array([np.interp(t, self._ts, self._qs[:, j]) for j in range(7)])
         return q, float(np.interp(t, self._ts, self._ws))
@@ -331,7 +346,8 @@ def cup_audit(x_mpm, pos_world, quat, h: float, extras, w2m):
     else:
         depth = float(np.quantile(z[cav], 0.97) - SPEC.floor_z) + 0.5 * h
         vol = SPEC.cavity_volume(depth)
-    return n_solid, cav, vol
+    n_pool = int((cav & (z < SPEC.floor_z + POOL_DEPTH)).sum())
+    return n_solid, cav, vol, n_pool
 
 
 def render_subsample(n: int, cap: int = RENDER_MAX):
@@ -414,15 +430,20 @@ def run(episode: Path, device: str = "auto", n_grid: int = 192, video: bool = Tr
         side_by_side: bool = True, rebake: bool = False, frames: int | None = None,
         eta: float = GLYCEROL["eta"], volume_ml: float = VOLUME_ML,
         receiver_xy=RECEIVER_XY, table_z: float = TABLE_Z,
-        cup_shift_xy=CUP_SHIFT_XY, grasp_roll_deg: float = GRASP_ROLL_DEG) -> dict:
+        cup_shift_xy=CUP_SHIFT_XY, grasp_roll_deg: float = GRASP_ROLL_DEG,
+        hold: float = 0.0) -> dict:
     liq = dict(GLYCEROL, eta=eta)
-    out = OUT_ROOT / episode.name
+    # the settled cache lives with the episode; a planning variant (hold > 0) writes its
+    # own directory, and the real video cannot be paired with it
+    cache_dir = OUT_ROOT / episode.name
+    out = cache_dir if hold == 0.0 else OUT_ROOT / f"{episode.name}_hold{hold:g}_eta{eta:.2f}"
+    side_by_side = side_by_side and hold == 0.0
     out.mkdir(parents=True, exist_ok=True)
     ep = load_episode(episode, PRE_ROLL, HOLD_SECONDS)
     receiver_pos = np.array([receiver_xy[0], receiver_xy[1], table_z])
 
     arm = RecordedPanda(ep, write_cup_obj(SPEC, out / "cup_render.obj"),
-                        cup_shift_xy=cup_shift_xy, grasp_roll_deg=grasp_roll_deg)
+                        cup_shift_xy=cup_shift_xy, grasp_roll_deg=grasp_roll_deg, hold=hold)
     cam = side_camera_view(ep["meta"])
     arm.model.vis.global_.fovy = cam["fovy"]
     arm.cam.lookat[:] = cam["lookat"]
@@ -436,7 +457,7 @@ def run(episode: Path, device: str = "auto", n_grid: int = 192, video: bool = Tr
     dt_tick = 1.0 / FPS
     substeps = substeps_per_tick(liq, grid.dx, dt_tick)
     dt = dt_tick / substeps
-    n_frames = round(ep["duration"] * FPS)
+    n_frames = round(arm.duration * FPS)
     if frames is not None:
         n_frames = min(n_frames, frames)
     w2m = world_to_mpm_offset(arm, receiver_pos, grid.dx)
@@ -466,12 +487,13 @@ def run(episode: Path, device: str = "auto", n_grid: int = 192, video: bool = Tr
     print(f"{episode.name}: n_grid={n_grid} dx={grid.dx*1000:.2f}mm N={n0} "
           f"glycerol={m_liq:.3f}kg ({1e6*vol.sum():.0f}mL) eta={liq['eta']} "
           f"dt={dt:.2e} ({substeps} substeps/frame) {n_frames} frames "
-          f"[pour @ {ep['t_pour']:.2f}s, return done @ {ep['t_return_done']:.2f}s]")
+          f"[pour @ {ep['t_pour']:.2f}s, hold {hold:g}s @ {ep['t_hold']:.2f}s, "
+          f"return done @ {ep['t_return_done'] + hold:.2f}s]")
     print(f"world->mpm offset {np.round(w2m, 4)}; cup0 {np.round(cup_pos0, 4)} "
           f"tilt0 {arm.tilt_degrees(cup_quat0):.2f}deg; receiver {receiver_pos}")
 
     # ---- settle (cached; stored in world frame so a changed w2m cannot shift it) ----
-    cache = out / f"settled_n{n_grid}_v{int(volume_ml)}.npz"
+    cache = cache_dir / f"settled_n{n_grid}_v{int(volume_ml)}.npz"
     loaded = False
     if cache.exists() and not rebake:
         d = np.load(cache)
@@ -530,8 +552,8 @@ def run(episode: Path, device: str = "auto", n_grid: int = 192, video: bool = Tr
 
         x = s.x()
         v = s.v()
-        ns_src, cav_src, vol_src = cup_audit(x, p_now, q_now, h, extras, w2m)
-        ns_rcv, cav_rcv, vol_rcv = cup_audit(x, receiver_pos, Q_RCV, h, extras, w2m)
+        ns_src, cav_src, vol_src, _ = cup_audit(x, p_now, q_now, h, extras, w2m)
+        ns_rcv, cav_rcv, vol_rcv, n_pool = cup_audit(x, receiver_pos, Q_RCV, h, extras, w2m)
         max_embedded = max(max_embedded, ns_src + ns_rcv)
         if ns_src or ns_rcv:
             x, v, n1 = project_out_of_solid(x, v, p_now + w2m, q_now, SPEC,
@@ -544,14 +566,14 @@ def run(episode: Path, device: str = "auto", n_grid: int = 192, video: bool = Tr
             proj_total += n1 + n2
             s.set_x(x)
             s.set_v(v)
-            _, cav_src, vol_src = cup_audit(x, p_now, q_now, h, extras, w2m)
-            _, cav_rcv, vol_rcv = cup_audit(x, receiver_pos, Q_RCV, h, extras, w2m)
+            _, cav_src, vol_src, _ = cup_audit(x, p_now, q_now, h, extras, w2m)
+            _, cav_rcv, vol_rcv, n_pool = cup_audit(x, receiver_pos, Q_RCV, h, extras, w2m)
 
         in_src, in_rcv = int(cav_src.sum()), int(cav_rcv.sum())
         tilt = arm.tilt_degrees(q_now)
         rows_out.append(dict(
             frame=frame, t=round(t_now, 5), tilt_deg=round(tilt, 2), n_src=in_src,
-            n_rcv=in_rcv, n_air_spill=n0 - in_src - in_rcv,
+            n_rcv=in_rcv, n_rcv_pool=n_pool, n_air_spill=n0 - in_src - in_rcv,
             frac_rcv=round(in_rcv / n0, 5),
             frac_spill=round((n0 - in_src - in_rcv) / n0, 5),
             ml_rcv=round(1e6 * vol.sum() * in_rcv / n0, 2),
@@ -590,7 +612,9 @@ def run(episode: Path, device: str = "auto", n_grid: int = 192, video: bool = Tr
             label="source level volume [mL]")
     ax.plot(r["t"], r["tilt_deg"], "--", color="grey", label="cup tilt [deg]")
     ax.axvline(ep["t_pour"], color="k", lw=0.5)
-    ax.axvline(ep["t_return_done"], color="k", lw=0.5)
+    if hold > 0.0:
+        ax.axvspan(ep["t_hold"], ep["t_hold"] + hold, color="k", alpha=0.06)
+    ax.axvline(ep["t_return_done"] + hold, color="k", lw=0.5)
     ax.set_ylabel("mL / deg")
     ax.legend()
     ax.grid(alpha=0.3)
@@ -609,7 +633,8 @@ def run(episode: Path, device: str = "auto", n_grid: int = 192, video: bool = Tr
     ax.legend()
     ax.grid(alpha=0.3)
     fig.suptitle(f"{episode.name} recorded-pour twin: glycerol eta={liq['eta']} Pa.s, "
-                 f"{volume_ml:.0f} mL, N={n0}, dx={grid.dx*1000:.1f} mm")
+                 f"{volume_ml:.0f} mL, N={n0}, dx={grid.dx*1000:.1f} mm"
+                 + (f", held {hold:g} s at the roll's end" if hold > 0.0 else ""))
     fig.tight_layout()
     fig.savefig(out / "metrics.png", dpi=130)
     plt.close(fig)
@@ -629,7 +654,8 @@ def run(episode: Path, device: str = "auto", n_grid: int = 192, video: bool = Tr
     print(f"final: transferred {r['ml_rcv'][-1]:.1f} mL ({100*r['frac_rcv'][-1]:.1f}%) "
           f"spill/air {r['frac_spill'][-1]*100:.2f}% | max embedded {max_embedded} "
           f"| projected {proj_total}")
-    return {"rows": rows_out, "mp4": mp4, "side_by_side": sbs}
+    return {"rows": rows_out, "mp4": mp4, "side_by_side": sbs, "out": out,
+            "final_ml": float(r["ml_rcv"][-1])}
 
 
 if __name__ == "__main__":
@@ -654,10 +680,13 @@ if __name__ == "__main__":
     ap.add_argument("--grasp-roll", type=float, default=GRASP_ROLL_DEG,
                     help="cup droop about the tilt axis, deg (+ve delays pour onset); "
                          "calibrated against the real receiver-arrival time")
+    ap.add_argument("--hold", type=float, default=0.0,
+                    help="planning: hold the cup at the roll's end pose for this many "
+                         "seconds before the recorded return (the robot's dwell_s)")
     args = ap.parse_args()
     run(episode=args.episode.resolve(), device=args.device,
         n_grid=96 if args.fast else args.n_grid, video=not args.skip_video,
         side_by_side=not args.no_side_by_side, rebake=args.rebake, frames=args.frames,
         eta=args.eta, volume_ml=args.volume_ml,
         receiver_xy=tuple(args.receiver_xy), table_z=args.table_z,
-        cup_shift_xy=tuple(args.cup_shift), grasp_roll_deg=args.grasp_roll)
+        cup_shift_xy=tuple(args.cup_shift), grasp_roll_deg=args.grasp_roll, hold=args.hold)

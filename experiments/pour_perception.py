@@ -19,6 +19,12 @@ needs, with no learned tracker:
                         static) and the exact upright cavity-volume curve. This V(t)
                         is the identification's only liquid observable, and the twin
                         comparison reads the same curve.
+  onset                 the first frame with amber below the receiver's 30 mL
+                        graduation (rays that light up only once liquid has landed on
+                        the floor; no ray through that region sees the held cup, so
+                        the count is zero until the pour arrives). The twin records the
+                        same event as landed particles (n_rcv_pool), so the two onsets
+                        compare like for like in pour_validate.py.
 
 Direct field channels (free-jet silhouette widths, spout-film thickness) were built
 and defeated by this episode's optics: the through-wall jet is refraction-distorted
@@ -42,7 +48,8 @@ Run:
   python experiments/pour_perception.py --no-video       # observations.npz only
 
 Outputs (out/pour_wf/<episode>/):
-  observations.npz   per-frame levels, volumes, poses, times
+  observations.npz   per-frame levels, volumes, poses, times, floor-crop amber counts;
+                     rcv_onset_s = the real onset on the pour clock
   extract_overlay.mp4  extraction proof: masks + fitted boundaries
   levels.png         level/volume curves + fit quality
 """
@@ -67,6 +74,8 @@ sys.path.insert(0, str(REPO / "examples"))
 from pour_recorded_twin import (
     GRASP_ROLL_DEG,
     HOLD_SECONDS,
+    POOL_DEPTH,
+    POOL_ML,
     PRE_ROLL,
     Q_RCV,
     RECEIVER_XY,
@@ -92,6 +101,7 @@ SAT_MIN, VAL_MIN = 0.42, 0.12     # generous amber mask (thin pools included)
 SAT_DEEP_SRC, CHORD_SRC = 0.70, 0.015
 SAT_DEEP_RCV, CHORD_RCV = 0.55, 0.008
 IOU_MIN = 0.25                    # below this the level fit is starved -> NaN
+POOL_PX_MIN = 50                  # amber px below the receiver's 30 mL graduation = onset
 # ---- geometry / sampling -------------------------------------------------------------
 RAY_STEPS = 64                    # samples per ray through a cup's bounding sphere
 CAVITY_INSET = 0.0012             # m; require this depth inside the cavity (wall band)
@@ -317,6 +327,9 @@ def run(ep_dir: Path, stride: int = 1, video: bool = True, probe: bool = False,
     # model + generous amber mask (reads the settled end state at IoU ~0.96 on ep0001).
     rcv_roi = roi_from_pose(cam, rcv_pos, quat_to_mat(Q_RCV))
     rcv_zon, _rcv_deep, rcv_chord = z_on_map(cam, rcv_pos, Q_RCV, rcv_roi, CHORD_RCV)
+    # onset watch: the floor crop, pixels lit once the level reaches the 30 mL graduation
+    rcv_pool = ((rcv_chord > 0.004) & np.isfinite(rcv_zon)
+                & (rcv_zon < TABLE_Z + SPEC.floor_z + POOL_DEPTH))
 
     t_lo, t_hi = t_send - t_pre, min(t_ret + t_post, t_lift - 0.2)
     tip_local = np.array([SPEC.tip_x, 0.0, SPEC.rim_z])
@@ -333,7 +346,7 @@ def run(ep_dir: Path, stride: int = 1, video: bool = True, probe: bool = False,
     rec: dict[str, list] = {k: [] for k in (
         "t", "frame_idx", "cup_pos", "cup_quat", "tilt_deg", "lip",
         "src_level", "src_vol", "src_vol_loose", "src_iou",
-        "rcv_level", "rcv_vol", "rcv_iou")}
+        "rcv_level", "rcv_vol", "rcv_iou", "rcv_pool_px")}
     zon_cache_pose = None
     t_start = time.time()
     n_done = 0
@@ -397,6 +410,7 @@ def run(ep_dir: Path, stride: int = 1, video: bool = True, probe: bool = False,
             rec["rcv_level"].append(rcv_level)
             rec["rcv_vol"].append(rcv_vol)
             rec["rcv_iou"].append(rcv_iou)
+            rec["rcv_pool_px"].append(int((rcv_obs & rcv_pool).sum()))
 
             if probe or video:
                 img = draw_overlay(rgb, amber, src_roi, src_pred, rcv_roi, rcv_pred,
@@ -416,9 +430,14 @@ def run(ep_dir: Path, stride: int = 1, video: bool = True, probe: bool = False,
     # ---- pack + save -------------------------------------------------------------------
     n = len(rec["t"])
     payload = {k: np.asarray(v) for k, v in rec.items()}
+    hit = np.where(payload["rcv_pool_px"] > POOL_PX_MIN)[0]
+    onset = float(payload["t"][hit[0]]) if len(hit) else np.nan
     payload.update(t_send=t_send, t_ret_done=t_ret - t_send, table_z=TABLE_Z,
                    receiver_xy=np.asarray(RECEIVER_XY), sigma=SIGMA_GLYCEROL,
-                   grasp_roll_deg=GRASP_ROLL_DEG, stride=stride)
+                   grasp_roll_deg=GRASP_ROLL_DEG, stride=stride,
+                   rcv_onset_s=onset, pool_ml=POOL_ML, pool_px_min=POOL_PX_MIN)
+    print(f"onset: first frame with >{POOL_PX_MIN} amber px below the {POOL_ML:.0f} mL "
+          f"graduation at t = {onset:+.2f} s (pour clock)")
     npz = out / ("observations_probe.npz" if probe else "observations.npz")
     np.savez_compressed(npz, **payload)
     print(f"wrote {npz} ({n} frames)")

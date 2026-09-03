@@ -29,7 +29,8 @@ Run:
   python experiments/pour_weakform_identify.py --selftest    # manufactured solution
 
 Outputs (out/pour_wf/<episode>/):
-  identify.json      eta_hat, CI, V0 scan, prefix sweep, diagnostics
+  identify.json      eta_hat, statistical CI, the fill-tolerance systematic
+                     (eta_v0_range), V0 scan, prefix sweep, diagnostics
   identify.png       fit, forcing, residuals, prefix sweep
 """
 from __future__ import annotations
@@ -546,7 +547,7 @@ def fit_eta_integrated(o: dict, t_hi: float | None = None):
     return float(eta), se, keep, dV, cF
 
 
-def run_brink(episode: str, v0_ml: float, t_fit):
+def run_brink(episode: str, v0_ml: float, t_fit, v0_tol: float = 10.0):
     out = OUT_ROOT / episode
     obs = dict(np.load(out / "observations.npz"))
     # two passes: the in-flight correction needs a flux scale
@@ -560,8 +561,11 @@ def run_brink(episode: str, v0_ml: float, t_fit):
                rms_mL=rms, v0_ml=v0_ml, t_fit=list(t_fit),
                h_tip_max_mm=float(np.nanmax(o["h_tip"]) * 1e3),
                dV_total_mL=float(dV[-1]))
-    # V0 scan: the head enters cubed, so eta_hat is sensitive to the fill. On ep0001
-    # the scan is monotone (V0 is not co-identifiable); reported as a stated systematic
+    # V0 scan: the head enters cubed, so eta_hat is sensitive to the fill (about 1.4%
+    # per mL on ep0001) while the residual barely moves across the scan: the window
+    # holds about a dozen distinct level readings and, after smoothing, a few
+    # independent samples, so the rms cannot rank V0. The fill therefore stays a
+    # protocol prior and its tolerance is carried as a systematic on eta_hat.
     v0_scan = []
     for v0 in np.arange(v0_ml - 30.0, v0_ml + 30.0 + 1e-9, 5.0):
         ov = brink_forcing(obs, float(v0), tuple(t_fit), eta_flight=eta0)
@@ -569,9 +573,10 @@ def run_brink(episode: str, v0_ml: float, t_fit):
         rv = float(np.sqrt(np.mean((dVv[kv] - cFv[kv] / ev) ** 2)))
         v0_scan.append(dict(v0=float(v0), eta=ev, se=sv, rms_mL=rv))
     res["v0_scan"] = v0_scan
-    best = min(v0_scan, key=lambda d: d["rms_mL"])
-    res["v0_best"] = best["v0"]
-    res["eta_at_v0_best"] = best["eta"]
+    res["v0_tol_ml"] = float(v0_tol)
+    res["eta_v0_range"] = [
+        fit_eta_integrated(brink_forcing(obs, v0_ml + d, tuple(t_fit), eta_flight=eta0))[0]
+        for d in (-v0_tol, v0_tol)]
     # prefix sweep: eta identified from data up to T only
     prefix = []
     for t_hi in np.arange(t_fit[0] + 0.3, t_fit[1] + 1e-9, 0.1):
@@ -588,6 +593,10 @@ def run_brink(episode: str, v0_ml: float, t_fit):
                       if k not in ("prefix_sweep", "v0_scan")}, indent=2))
     print("v0 scan:", " ".join(f"{d['v0']:.0f}:{d['eta']:.2f}({d['rms_mL']:.1f}mL)"
                                for d in v0_scan))
+    lo, hi = res["eta_v0_range"]
+    print(f"fill prior {v0_ml:.0f} +- {v0_tol:.0f} mL -> eta_hat in [{lo:.2f}, {hi:.2f}] Pa.s "
+          f"({100 * (lo / eta - 1):+.0f}% / {100 * (hi / eta - 1):+.0f}%), the dominant "
+          f"systematic (statistical: +-{100 * se / eta:.1f}%)")
     plot_brink_integrated(o, eta, keep, dV, cF, res, out / "identify.png")
     print("wrote", out / "identify.json", "and", out / "identify.png")
     return res
@@ -651,8 +660,10 @@ if __name__ == "__main__":
                     help="pour-clock fit window (s after t_send); the default is "
                          "the quasi-steady mid-drain (early = slosh, late = "
                          "flight/film-drain)")
+    ap.add_argument("--v0-tol", type=float, default=10.0,
+                    help="fill uncertainty (mL) carried as the eta_hat systematic")
     args = ap.parse_args()
     if args.selftest:
         selftest()
         sys.exit(0)
-    run_brink(args.episode, args.v0_ml, args.t_fit)
+    run_brink(args.episode, args.v0_ml, args.t_fit, args.v0_tol)

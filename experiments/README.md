@@ -49,6 +49,27 @@ Perception and rendering studies:
 - `speckle_particle_videos.py`, `surface_track_test.py`: speckle-render inputs for
   tracking, and smooth-versus-textured surface trackability.
 
+Recorded hardware pour (ep0001 of `pouring_real_data/`; the twin is
+`examples/pour_recorded_twin.py`, every step writes to `out/pour_wf/<episode>/`):
+
+- `pour_calibrate_geometry.py`: the twin's Stage-0 constants from the side camera's
+  depth stream (table height, receiver center, held-cup grasp shift), by fitting the
+  caliper cup ellipse to pre-pour depth points; its liquid-surface read is indicative
+  only (the IR pattern penetrates the glycerol).
+- `pour_perception.py`: amber segmentation and ray/cavity level fits, giving the
+  receiver curve V(t), the cup poses, and the floor-crop onset (`observations.npz`).
+- `pour_weakform_identify.py`: the time-weak brink lubrication fit, giving eta_hat with
+  its statistical error and the fill-tolerance systematic; `--selftest` runs the
+  manufactured-solution gate of the slender-jet estimator.
+- `pour_validate.py`: the twin at eta_hat and every archived comparison twin against
+  the real curve (finals, rms, like-for-like onsets) plus the side-by-side video.
+- `pour_hold_sweep.py`: the hold-time lookup table for metering a target volume: the twin
+  run with the cup held at the roll's end pose for each dwell (`--hold` in the twin), at
+  eta_hat and at the handbook value; `--plan V` prints the dwell to command for a target.
+- `pour_note_figures.py`: the figures of the walkthrough note (`docs/`, personal).
+- `pour_franka_calibrate.py`: the honey pour's two measured constants, the spout
+  azimuth baked into CUP_TO_HAND and the stream-landing receiver position.
+
 Design:
 
 - `pressure_covariance_sweep.py`: information-matrix and covariance study of the
