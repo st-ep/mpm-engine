@@ -287,10 +287,29 @@ def fig_hold(episode: str) -> None:
             ax.plot([h, h], [0, t], color="tab:blue", lw=0.7, ls="--")
             ax.text(h + 0.05, t - 9, f"{h:.2f} s", fontsize=7, color="tab:blue")
     ax.axhline(97.2, color="tab:red", lw=0.8, ls="-.", label="real ep0001, no hold")
+    hw = REPO / "out" / "pour_wf" / episode / "hardware_pours.json"
+    if hw.exists():
+        # the first hardware pours at table dwells, and the two-parameter reading of them:
+        # a baseline shift plus a gain on the twin's hold increment
+        d = json.loads(hw.read_text())
+        run = tab["runs"][f"{eta_hat:.2f}"]
+        t_hw = np.array([q["dwell_s"] for q in d["pours"]])
+        v_hw = np.array([q["ml"] for q in d["pours"]])
+        inc = np.interp(t_hw, run["hold_s"], run["final_ml"]) - run["final_ml"][0]
+        (v0, gain), *_ = np.linalg.lstsq(np.c_[np.ones_like(inc), inc], v_hw, rcond=None)
+        hs = np.linspace(0, max(run["hold_s"]), 200)
+        ax.plot(hs, v0 + gain * (np.interp(hs, run["hold_s"], run["final_ml"])
+                                 - run["final_ml"][0]),
+                color="tab:red", lw=1.0, ls="--",
+                label=rf"{v0:.0f} mL + {gain:.2f} $\times$ twin gain (fit to the pours)")
+        ax.plot(t_hw, v_hw, "o", color="tab:red", ms=5, zorder=5,
+                label=f"hardware pours {d['date']} (graduation read)")
+        print(f"hold: hardware fit baseline {v0:.1f} mL, gain {gain:.2f}, "
+              f"residuals {np.round(v_hw - (v0 + gain * inc), 1)} mL")
     ax.set_xlabel("hold at the roll's end pose  [s]")
     ax.set_ylabel("transferred  [mL]")
     ax.set_ylim(0, None)
-    ax.legend(fontsize=7, loc="lower right")
+    ax.legend(fontsize=6.5, loc="lower right")
     ax.grid(alpha=0.25)
     fig.tight_layout()
     fig.savefig(FIGS / f"{episode}_hold_table.pdf")
