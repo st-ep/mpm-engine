@@ -58,6 +58,7 @@ from pour_recorded_twin import (
     TABLE_Z,
     RecordedPanda,
     load_episode,
+    recorded_pour_actions,
 )
 from warpmpm.geometry.measuring_cup import write_cup_obj
 
@@ -73,11 +74,7 @@ N_BOOT = 200              # bootstrap resamples for the center uncertainties
 
 
 def pour_send_time(ep_dir: Path) -> float:
-    acts = [json.loads(ln) for ln in (ep_dir / "actions.jsonl").read_text().splitlines()
-            if ln]
-    moves = [a for a in acts if a.get("type") == "go_to_pose"]
-    return next(a["t_send"] for a in moves
-                if a["target_quat_xyzw"] != [0.5, 0.5, -0.5, 0.5])
+    return float(recorded_pour_actions(ep_dir)[0]["t_send"])
 
 
 def fuse_depth(ep_dir: Path, meta: dict, t_lo: float, t_hi: float, stride: int):

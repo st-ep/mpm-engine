@@ -5,6 +5,9 @@ Consumes:
   out/pour_wf/<ep>/observations.npz     perception (real V(t) via the graduation curve,
                                         real onset from the receiver's floor crop)
   out/pour_wf/<ep>/identify.json        the weak-form eta_hat
+  out/pour_wf/<ep>/recording_manifest.json (optional)
+                                        independently reported final receiver volume;
+                                        overrides the video endpoint for validation
   out/pour_recorded_twin/<ep>/metrics.csv and side_by_side.mp4
                                         the single twin run at eta_hat (the only
                                         simulation in the pipeline)
@@ -70,23 +73,56 @@ def load_all(episode: str):
     return obs, ident, sim, others, wf, tw
 
 
-def numbers(obs, sim) -> dict:
+def final_volume_reference(obs, measurements: dict | None = None) -> dict:
+    """Keep the independently reported endpoint separate from the video curve.
+
+    Legacy recordings without measurements retain their video endpoint. No video
+    sample is changed or rescaled: time-series RMS still compares against video.
+    """
+    t = np.asarray(obs["t"])
+    volumes = np.asarray(obs["rcv_vol"]) * 1e6
+    readable = np.isfinite(t) & np.isfinite(volumes)
+    video = float("nan")
+    if readable.any():
+        late = readable & (t > t[readable].max() - 1.0)
+        video = float(np.median(volumes[late]))
+    supplied = (measurements or {}).get("final_receiver_volume_ml")
+    if supplied is None:
+        value, kind, source = video, "video_estimate", "median of last readable video second"
+    else:
+        value = float(supplied)
+        if not np.isfinite(value) or value < 0:
+            raise ValueError("final_receiver_volume_ml must be finite and nonnegative")
+        kind = "reported_measurement"
+        source = measurements.get("final_volume_source", "independently reported endpoint")
+    uncertainty = (measurements or {}).get("final_volume_uncertainty_ml")
+    if uncertainty is not None:
+        uncertainty = float(uncertainty)
+        if not np.isfinite(uncertainty) or uncertainty < 0:
+            raise ValueError("final_volume_uncertainty_ml must be finite and nonnegative")
+    return dict(v_final_real_mL=value, v_final_reference_kind=kind,
+                v_final_reference_source=source, v_final_uncertainty_mL=uncertainty,
+                experiment_role=(measurements or {}).get("experiment_role", "unspecified"),
+                v_final_video_mL=video, v_final_video_minus_reference_mL=video - value)
+
+
+def numbers(obs, sim, measurements: dict | None = None) -> dict:
     t_r = obs["t"]
     v_r = obs["rcv_vol"] * 1e6
     ok = np.isfinite(v_r)
     t_s, v_s = sim["t_pour"], sim["ml_rcv"]
-    # real settled value: median of the last second of readable data
-    late = ok & (t_r > t_r[ok].max() - 1.0)
-    v_final_real = float(np.median(v_r[late]))
+    reference = final_volume_reference(obs, measurements)
+    v_final_real = reference["v_final_real_mL"]
     v_final_sim = float(v_s[-1])
     m = ok & (t_r >= t_s.min()) & (t_r <= t_s.max())
     v_sim_i = np.interp(t_r[m], t_s, v_s)
-    rms = float(np.sqrt(np.mean((v_r[m] - v_sim_i) ** 2)))
-    out = dict(v_final_real_mL=v_final_real, v_final_sim_mL=v_final_sim,
+    rms = float(np.sqrt(np.mean((v_r[m] - v_sim_i) ** 2))) if m.any() else float("nan")
+    out = dict(**reference, v_final_sim_mL=v_final_sim,
                v_final_err_mL=v_final_sim - v_final_real,
-               v_final_err_pct=100 * (v_final_sim - v_final_real)
-               / max(v_final_real, 1e-9),
+               v_final_err_pct=(100 * (v_final_sim - v_final_real) / v_final_real
+                                if v_final_real > 0 else float("nan")),
                rms_overlap_mL=rms, n_real_points=int(m.sum()),
+               rms_overlap_reference="video_receiver_curve",
                # arrival: first sim frame with > 2 mL anywhere in the cavity
                sim_arrival_2ml_s=(float(t_s[np.argmax(v_s > 2.0)])
                                   if (v_s > 2.0).any() else np.nan))
@@ -102,7 +138,7 @@ def plot(obs, ident, sim, others, num, path: Path):
     fig, ax = plt.subplots(figsize=(9, 5.5))
     ok = np.isfinite(obs["rcv_vol"])
     ax.plot(obs["t"][ok], obs["rcv_vol"][ok] * 1e6, ".", ms=3, color="k",
-            label="real: receiver level -> graduation curve [mL]")
+            label="video-derived receiver volume [mL]")
     ax.plot(sim["t_pour"], sim["ml_rcv"], "-", color="tab:blue", lw=1.8,
             label=f"twin at identified eta = {ident['eta']:.2f} Pa.s (count) [mL]")
     colors = ("tab:orange", "tab:green", "tab:red", "tab:purple")
@@ -117,12 +153,15 @@ def plot(obs, ident, sim, others, num, path: Path):
     # 0.97-quantile level; the count channel is unaffected)
     if np.isfinite(num.get("real_onset_pool_s", np.nan)):
         ax.axvline(num["real_onset_pool_s"], color="k", lw=0.6, ls=":", alpha=0.7)
-    ax.axhline(num["v_final_real_mL"], color="k", lw=0.6, ls="--", alpha=0.5)
+    if np.isfinite(num["v_final_real_mL"]):
+        label = ("reported final volume" if num["v_final_reference_kind"] == "reported_measurement"
+                 else "video endpoint (no independent measurement)")
+        ax.axhline(num["v_final_real_mL"], color="k", lw=0.8, ls="--", alpha=0.7, label=label)
     ax.set_xlabel("t - t_send [s]")
     ax.set_ylabel("transferred volume [mL]")
-    ax.set_title(f"prediction: final {num['v_final_sim_mL']:.1f} vs real "
+    ax.set_title(f"prediction: final {num['v_final_sim_mL']:.1f} vs reference "
                  f"{num['v_final_real_mL']:.1f} mL "
-                 f"({num['v_final_err_pct']:+.1f}%), RMS {num['rms_overlap_mL']:.1f} mL")
+                 f"({num['v_final_err_pct']:+.1f}%), video RMS {num['rms_overlap_mL']:.1f} mL")
     ax.legend(loc="lower right", fontsize=9)
     ax.grid(alpha=0.3)
     fig.tight_layout()
@@ -131,14 +170,17 @@ def plot(obs, ident, sim, others, num, path: Path):
 
 
 def curve_strip(obs, sim, ident, t_now: float, width_px: int, height_px: int,
-                t_lo: float, t_hi: float, v_max: float):
+                t_lo: float, t_hi: float, v_max: float, reference: dict | None = None):
     """One matplotlib frame of the V(t) race with a time cursor, as an RGB array."""
     dpi = 100
     fig, ax = plt.subplots(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
     ok = np.isfinite(obs["rcv_vol"])
     tr, vr = obs["t"][ok], obs["rcv_vol"][ok] * 1e6
     m = tr <= t_now
-    ax.plot(tr[m], vr[m], ".", ms=2.5, color="#222222", label="real (graduations)")
+    ax.plot(tr[m], vr[m], ".", ms=2.5, color="#222222", label="video-derived volume")
+    if reference and reference["v_final_reference_kind"] == "reported_measurement":
+        ax.axhline(reference["v_final_real_mL"], color="k", ls="--", lw=0.8,
+                   label="reported endpoint (whole pour)")
     ms_ = sim["t_pour"] <= t_now
     ax.plot(sim["t_pour"][ms_], sim["ml_rcv"][ms_], "-", lw=2, color="tab:blue",
             label=f"twin @ eta={ident['eta']:.2f} Pa.s")
@@ -156,7 +198,16 @@ def curve_strip(obs, sim, ident, t_now: float, width_px: int, height_px: int,
     return img
 
 
-def compose_video(obs, sim, ident, tw: Path, out_mp4: Path, strip_h: int = 240):
+def curve_volume_limit(obs, sim, reference: dict | None = None) -> float:
+    """Common mL axis for particle-count predictions, SI-unit video, and endpoint."""
+    values = np.r_[sim["ml_rcv"], np.asarray(obs["rcv_vol"]) * 1e6,
+                   (reference or {}).get("v_final_real_mL", np.nan)]
+    finite = values[np.isfinite(values)]
+    return 1.15 * max(float(finite.max()) if len(finite) else 0.0, 1.0)
+
+
+def compose_video(obs, sim, ident, tw: Path, out_mp4: Path, strip_h: int = 240,
+                  reference: dict | None = None):
     import imageio.v2 as imageio
 
     src = tw / "side_by_side.mp4"
@@ -168,9 +219,7 @@ def compose_video(obs, sim, ident, tw: Path, out_mp4: Path, strip_h: int = 240):
     fps = meta.get("fps", 60)
     t0 = float(sim["t_pour"][0]) - 1.0 / fps        # frame 0 of the twin video
     t_lo, t_hi = t0, float(sim["t_pour"][-1])
-    v_max = 1.15 * max(np.nanmax(sim["ml_rcv"]),
-                       np.nanmax(np.where(np.isfinite(obs["rcv_vol"]),
-                                          obs["rcv_vol"], 0.0)) * 1e6)
+    v_max = curve_volume_limit(obs, sim, reference)
     strip_cache = {}
     with imageio.get_writer(out_mp4, fps=fps, codec="libx264", quality=8,
                             macro_block_size=2,
@@ -182,7 +231,7 @@ def compose_video(obs, sim, ident, tw: Path, out_mp4: Path, strip_h: int = 240):
                 strip_cache.clear()
                 strip_cache[key] = curve_strip(obs, sim, ident, t_now,
                                                frame.shape[1], strip_h,
-                                               t_lo, t_hi, v_max)
+                                               t_lo, t_hi, v_max, reference)
             strip = strip_cache[key]
             if strip.shape[1] != frame.shape[1]:
                 pad = frame.shape[1] - strip.shape[1]
@@ -198,13 +247,21 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--episode", default="ep0001")
     ap.add_argument("--no-video", action="store_true")
+    ap.add_argument("--measurements-json", type=Path,
+                    help="reported endpoint; defaults to the episode's recording_manifest.json")
     args = ap.parse_args()
     obs, ident, sim, others, wf, tw = load_all(args.episode)
-    num = numbers(obs, sim)
+    measurement_path = args.measurements_json or wf / "recording_manifest.json"
+    measurements = (json.loads(measurement_path.read_text())
+                    if measurement_path.exists() else None)
+    if args.measurements_json is not None and measurements is None:
+        raise FileNotFoundError(measurement_path)
+    num = numbers(obs, sim, measurements)
+    num["measurements_file"] = str(measurement_path) if measurements is not None else None
     num["eta"] = ident["eta"]
     num["other_runs"] = []
     for o in others:
-        n = numbers(obs, o["sim"])
+        n = numbers(obs, o["sim"], measurements)
         num["other_runs"].append(dict(
             eta=o["eta"], volume_ml=o["volume_ml"], v_final_sim_mL=n["v_final_sim_mL"],
             v_final_err_pct=n["v_final_err_pct"], rms_overlap_mL=n["rms_overlap_mL"],
@@ -215,7 +272,7 @@ def main():
     plot(obs, ident, sim, others, num, wf / "validation.png")
     print("wrote", wf / "validation.png", "and", wf / "validation.json")
     if not args.no_video:
-        compose_video(obs, sim, ident, tw, wf / "side_by_side_curve.mp4")
+        compose_video(obs, sim, ident, tw, wf / "side_by_side_curve.mp4", reference=num)
 
 
 if __name__ == "__main__":

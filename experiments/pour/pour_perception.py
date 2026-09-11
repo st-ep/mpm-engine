@@ -72,6 +72,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "examples"))
 
 from pour_recorded_twin import (
+    CUP_SHIFT_XY,
     GRASP_ROLL_DEG,
     HOLD_SECONDS,
     POOL_DEPTH,
@@ -83,6 +84,7 @@ from pour_recorded_twin import (
     TABLE_Z,
     RecordedPanda,
     load_episode,
+    recorded_pour_actions,
 )
 from warpmpm.colliders.glass import quat_to_mat
 from warpmpm.geometry.measuring_cup import cavity_sdf_local, write_cup_obj
@@ -141,7 +143,7 @@ class Camera:
 
 def amber_mask(rgb: np.ndarray):
     """(generous amber mask, saturation map). Level fits gate the mask by SAT_DEEP_*."""
-    hsv = rgb_to_hsv(rgb.astype(np.float32) / 255.0)
+    hsv = rgb_to_hsv(np.asarray(rgb, dtype=np.float32) / 255.0)
     hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
     amber = ((hue <= HUE_HI) | (hue >= HUE_LO)) & (sat >= SAT_MIN) & (val >= VAL_MIN)
     return amber, sat
@@ -213,12 +215,15 @@ def z_on_map(cam: Camera, pos, quat_wxyz, roi, chord_min: float):
 
 
 def fit_level(z_on: np.ndarray, chord: np.ndarray, observed: np.ndarray,
-              domain_chord: float = 0.004):
+              domain_chord: float = 0.004, excluded: np.ndarray | None = None):
     """Level maximizing IoU between the liquid prediction {z_on < L} and the observed
     amber mask, over rays whose total cavity chord exceeds `domain_chord` (sliver
     rejection). Returns (level, iou, predicted mask at the level). NaN level when
-    starved or the best IoU is below IOU_MIN."""
+    starved or the best IoU is below IOU_MIN. Excluded pixels (e.g. the falling
+    stream) are removed from both the observation and prediction domains."""
     solid = (chord > domain_chord) & np.isfinite(z_on)
+    if excluded is not None:
+        solid &= ~excluded
     if solid.sum() < 40 or (observed & solid).sum() < 40:
         return np.nan, 0.0, np.zeros_like(observed)
     obs = observed & solid
@@ -277,14 +282,9 @@ def rim_curve_local(spec=SPEC, half_width: float = 0.024, n: int = 33):
 def load_all(ep_dir: Path):
     ep = load_episode(ep_dir, PRE_ROLL, HOLD_SECONDS)
     meta = ep["meta"]
-    acts = [json.loads(ln) for ln in
-            (ep_dir / "actions.jsonl").read_text().splitlines() if ln]
-    moves = [a for a in acts if a.get("type") == "go_to_pose"]
-    i_pour = next(i for i, a in enumerate(moves)
-                  if a["target_quat_xyzw"] != [0.5, 0.5, -0.5, 0.5])
-    t_send = moves[i_pour]["t_send"]
-    t_ret = moves[i_pour + 1]["t_ack"]
-    t_lift = moves[i_pour + 2]["t_send"] if i_pour + 2 < len(moves) else t_ret + 60.0
+    pour, ret, lift = recorded_pour_actions(ep_dir)
+    t_send, t_ret = pour["t_send"], ret["t_ack"]
+    t_lift = lift["t_send"] if lift is not None else t_ret + 60.0
     rows = [json.loads(ln) for ln in
             (ep_dir / "frames_side.jsonl").read_text().splitlines() if ln]
     return ep, meta, rows, t_send, t_ret, t_lift
@@ -312,15 +312,21 @@ def frame_iter(ep_dir: Path, rows: list[dict], t_lo: float, t_hi: float, stride:
 # main extraction
 # --------------------------------------------------------------------------------------
 def run(ep_dir: Path, stride: int = 1, video: bool = True, probe: bool = False,
-        t_pre: float = 6.0, t_post: float = 8.0):
+        t_pre: float = 6.0, t_post: float = 8.0, table_z: float = TABLE_Z,
+        receiver_xy=RECEIVER_XY, cup_shift_xy=CUP_SHIFT_XY,
+        grasp_roll_deg: float = GRASP_ROLL_DEG, probe_times=None,
+        cup_reference_pos=None, cup_reference_quat=None):
     out = OUT_ROOT / ep_dir.name
     out.mkdir(parents=True, exist_ok=True)
     ep, meta, rows, t_send, t_ret, t_lift = load_all(ep_dir)
     cam = Camera(meta, "side")
     arm = RecordedPanda(ep, write_cup_obj(SPEC, out / "cup_render.obj"),
-                        height=64, width=64, max_geom=4000)
+                        height=64, width=64, max_geom=4000,
+                        cup_shift_xy=cup_shift_xy, grasp_roll_deg=grasp_roll_deg,
+                        cup_reference_pos=cup_reference_pos,
+                        cup_reference_quat=cup_reference_quat)
     t0 = t_send - PRE_ROLL                       # twin's episode clock zero
-    rcv_pos = np.array([RECEIVER_XY[0], RECEIVER_XY[1], TABLE_Z])
+    rcv_pos = np.array([receiver_xy[0], receiver_xy[1], table_z])
     lattice, cell_vol = build_cavity_lattice()
 
     # receiver turn-on map: static, computed once. The level uses the first-touch
@@ -329,13 +335,14 @@ def run(ep_dir: Path, stride: int = 1, video: bool = True, probe: bool = False,
     rcv_zon, _rcv_deep, rcv_chord = z_on_map(cam, rcv_pos, Q_RCV, rcv_roi, CHORD_RCV)
     # onset watch: the floor crop, pixels lit once the level reaches the 30 mL graduation
     rcv_pool = ((rcv_chord > 0.004) & np.isfinite(rcv_zon)
-                & (rcv_zon < TABLE_Z + SPEC.floor_z + POOL_DEPTH))
+                & (rcv_zon < table_z + SPEC.floor_z + POOL_DEPTH))
 
     t_lo, t_hi = t_send - t_pre, min(t_ret + t_post, t_lift - 0.2)
     tip_local = np.array([SPEC.tip_x, 0.0, SPEC.rim_z])
 
     if probe:
-        probe_times = [t_send - 0.5, t_send + 2.0, t_send + 3.2, t_ret + 4.0]
+        probe_times = ([t_send + t for t in probe_times] if probe_times is not None else
+                       [t_send - 0.5, t_send + 2.0, t_send + 3.2, t_ret + 4.0])
     frames_out = out / "_overlay"
     if video:
         import imageio.v2 as imageio
@@ -392,9 +399,12 @@ def run(ep_dir: Path, stride: int = 1, video: bool = True, probe: bool = False,
             tt = -(dxy @ oxy) / np.maximum((dxy * dxy).sum(1), 1e-12)
             miss = np.linalg.norm(oxy[None, :] + tt[:, None] * dxy, axis=1)
             stream_band = (miss < 0.020).reshape(vv.shape)
+            # Exclude stream rays from BOTH sides of IoU. Removing only their amber
+            # pixels penalizes correctly predicted liquid there and biases the level
+            # downward, especially for camera views with a wide projected stream band.
             rcv_level, rcv_iou, rcv_pred = fit_level(
-                rcv_zon, rcv_chord, rcv_obs & ~stream_band)
-            rcv_vol = (SPEC.cavity_volume(rcv_level - (TABLE_Z + SPEC.floor_z))
+                rcv_zon, rcv_chord, rcv_obs, excluded=stream_band)
+            rcv_vol = (SPEC.cavity_volume(rcv_level - (table_z + SPEC.floor_z))
                        if np.isfinite(rcv_level) else np.nan)
 
             rec["t"].append(t_abs - t_send)      # pour clock: 0 = pour move sent
@@ -432,10 +442,15 @@ def run(ep_dir: Path, stride: int = 1, video: bool = True, probe: bool = False,
     payload = {k: np.asarray(v) for k, v in rec.items()}
     hit = np.where(payload["rcv_pool_px"] > POOL_PX_MIN)[0]
     onset = float(payload["t"][hit[0]]) if len(hit) else np.nan
-    payload.update(t_send=t_send, t_ret_done=t_ret - t_send, table_z=TABLE_Z,
-                   receiver_xy=np.asarray(RECEIVER_XY), sigma=SIGMA_GLYCEROL,
-                   grasp_roll_deg=GRASP_ROLL_DEG, stride=stride,
+    payload.update(t_send=t_send, t_ret_done=t_ret - t_send, table_z=table_z,
+                   receiver_xy=np.asarray(receiver_xy), sigma=SIGMA_GLYCEROL,
+                   cup_shift_xy=np.asarray(cup_shift_xy),
+                   grasp_roll_deg=grasp_roll_deg, stride=stride,
                    rcv_onset_s=onset, pool_ml=POOL_ML, pool_px_min=POOL_PX_MIN)
+    if cup_reference_pos is not None:
+        payload["cup_reference_pos"] = np.asarray(cup_reference_pos)
+    if cup_reference_quat is not None:
+        payload["cup_reference_quat"] = np.asarray(cup_reference_quat)
     print(f"onset: first frame with >{POOL_PX_MIN} amber px below the {POOL_ML:.0f} mL "
           f"graduation at t = {onset:+.2f} s (pour clock)")
     npz = out / ("observations_probe.npz" if probe else "observations.npz")
@@ -476,7 +491,7 @@ def draw_overlay(rgb, amber, src_roi, src_pred, rcv_roi, rcv_pred, stream_band,
         u, v = round(uv[0, 0]), round(uv[0, 1])
         if 2 <= u < cam.w - 2 and 2 <= v < cam.h - 2:
             img[v - 2:v + 3, u - 2:u + 3] = (0, 255, 0)
-    return np.ascontiguousarray(np.rot90(img, k=-1))
+    return np.ascontiguousarray(np.rot90(img, k=1 if cam.R[2, 0] > 0 else -1))
 
 
 def plot_levels(p: dict, path: Path):
@@ -524,6 +539,18 @@ if __name__ == "__main__":
     ap.add_argument("--no-video", action="store_true")
     ap.add_argument("--probe", action="store_true",
                     help="overlay stills on 4 key frames, no full run")
+    ap.add_argument("--probe-times", type=float, nargs="+", help="probe times after pour send")
+    ap.add_argument("--table-z", type=float, default=TABLE_Z)
+    ap.add_argument("--receiver-xy", type=float, nargs=2, default=RECEIVER_XY)
+    ap.add_argument("--cup-shift", type=float, nargs=2, default=CUP_SHIFT_XY)
+    ap.add_argument("--grasp-roll", type=float, default=GRASP_ROLL_DEG)
+    ap.add_argument("--geometry-json", type=Path,
+                    help="session geometry: table_z, receiver_xy, cup_reference_pos/quat (wxyz)")
     args = ap.parse_args()
+    geo = json.loads(args.geometry_json.read_text()) if args.geometry_json else {}
     run(args.episode.resolve(), stride=args.stride, video=not args.no_video,
-        probe=args.probe)
+        probe=args.probe, table_z=geo.get("table_z", args.table_z),
+        receiver_xy=geo.get("receiver_xy", args.receiver_xy),
+        cup_shift_xy=args.cup_shift, grasp_roll_deg=args.grasp_roll,
+        probe_times=args.probe_times, cup_reference_pos=geo.get("cup_reference_pos"),
+        cup_reference_quat=geo.get("cup_reference_quat"))

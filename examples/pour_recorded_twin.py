@@ -129,22 +129,34 @@ GRASP_ROLL_DEG = 1.0
 # --------------------------------------------------------------------------------------
 # episode loading
 # --------------------------------------------------------------------------------------
+def recorded_pour_actions(ep_dir: Path) -> tuple[dict, dict, dict | None]:
+    """Find pour, return and optional lift in planned or cached-trajectory logs."""
+    actions = [json.loads(line) for line in
+               (ep_dir / "actions.jsonl").read_text().splitlines() if line]
+    moves = [a for a in actions if a.get("type") in
+             {"go_to_pose", "execute_trajectory"}]
+    upright = np.array([0.5, 0.5, -0.5, 0.5])
+    for i, action in enumerate(moves[:-1]):
+        angle = action.get("pour_angle_deg")
+        quat = np.asarray(action.get("target_quat_xyzw", upright), dtype=float)
+        tilted = (abs(float(angle)) > 1e-6 if angle is not None else
+                  not np.isclose(abs(np.dot(quat / np.linalg.norm(quat), upright)),
+                                 1.0, atol=1e-7, rtol=0.0))
+        if tilted:
+            return action, moves[i + 1], moves[i + 2] if i + 2 < len(moves) else None
+    raise ValueError(f"No pour followed by a return in {ep_dir / 'actions.jsonl'}")
+
+
 def load_episode(ep_dir: Path, pre_roll: float, hold: float) -> dict:
     """Parse actions/states into a replay window and a joint track.
 
     Window: [pour.t_send - pre_roll, return.t_ack + hold], clamped before the next
     go_to_pose (the unload lift) so the twin never replays the gripper opening."""
-    acts = [json.loads(ln) for ln in
-            (ep_dir / "actions.jsonl").read_text().splitlines() if ln]
-    moves = [a for a in acts if a.get("type") == "go_to_pose"]
-    # the pour + return are the consecutive pair after the 'ready to pour' wait
-    i_pour = next(i for i, a in enumerate(moves)
-                  if a["target_quat_xyzw"] != [0.5, 0.5, -0.5, 0.5])
-    pour, ret = moves[i_pour], moves[i_pour + 1]
+    pour, ret, lift = recorded_pour_actions(ep_dir)
     t0 = pour["t_send"] - pre_roll
     t1 = ret["t_ack"] + hold
-    if i_pour + 2 < len(moves):
-        t1 = min(t1, moves[i_pour + 2]["t_send"] - 0.05)
+    if lift is not None:
+        t1 = min(t1, lift["t_send"] - 0.05)
 
     rows = [json.loads(ln) for ln in
             (ep_dir / "states.jsonl").read_text().splitlines() if ln]
@@ -156,13 +168,15 @@ def load_episode(ep_dir: Path, pre_roll: float, hold: float) -> dict:
             ws.append(r["state"]["gripper_width"])
     ts = np.asarray(ts)
     gaps = np.diff(ts)
-    if len(ts) < 10 or gaps.max() > 0.3:
+    max_gap = float(gaps.max()) if len(gaps) else float("inf")
+    if len(ts) < 10 or max_gap > 0.3 or np.any(gaps <= 0.0):
         raise SystemExit(f"state stream too sparse in the replay window "
-                         f"(n={len(ts)}, max gap {gaps.max():.2f}s)")
+                         f"(n={len(ts)}, max gap {max_gap:.2f}s)")
     meta = json.loads((ep_dir / "meta.json").read_text())
     return dict(
         t0=t0, duration=t1 - t0, t_ref=pour["t_send"] - t0,
         t_pour=pour["t_send"] - t0, t_hold=pour["t_ack"] - t0,
+        t_return_start=ret["t_send"] - t0,
         t_return_done=ret["t_ack"] - t0,
         ts=ts - t0, qs=np.asarray(qs), widths=np.asarray(ws), meta=meta,
     )
@@ -199,7 +213,8 @@ class RecordedPanda(FrankaArm):
 
     def __init__(self, ep: dict, glass_mesh: Path, height: int = 848, width: int = 480,
                  max_geom: int = 360000, cup_shift_xy=CUP_SHIFT_XY,
-                 grasp_roll_deg: float = GRASP_ROLL_DEG, hold: float = 0.0):
+                 grasp_roll_deg: float = GRASP_ROLL_DEG, hold: float = 0.0,
+                 cup_reference_pos=None, cup_reference_quat=None):
         self._glass_mesh = str(glass_mesh)
         self._glass_rgba = CUP_RGBA
         self._ts, self._qs, self._ws = ep["ts"], ep["qs"], ep["widths"]
@@ -220,6 +235,8 @@ class RecordedPanda(FrankaArm):
         r_ref = np.array([[np.cos(d), 0.0, np.sin(d)],
                           [0.0, 1.0, 0.0],
                           [-np.sin(d), 0.0, np.cos(d)]]) @ R_CUP_REF
+        if cup_reference_quat is not None:
+            r_ref = quat_to_mat(np.asarray(cup_reference_quat, dtype=float))
         self.set_time(ep["t_ref"])
         r_hand = quat_to_mat(self.data.xquat[self.ee])
         self._hand_cup = r_hand.T @ r_ref
@@ -227,6 +244,11 @@ class RecordedPanda(FrankaArm):
         # (cup_pos = TCP - R_cup @ grasp  =>  grasp -= R_ref^T @ shift)
         shift = np.array([cup_shift_xy[0], cup_shift_xy[1], 0.0])
         self._grasp = self.GRASP_LOCAL - r_ref.T @ shift
+        if cup_reference_pos is not None:
+            # A pose fitted to this session's cup outlines determines the complete
+            # rigid grasp, including vertical insertion and both cup lean angles.
+            tcp = self.data.xpos[self.ee] + r_hand @ self.TCP_LOCAL
+            self._grasp = r_ref.T @ (tcp - np.asarray(cup_reference_pos, dtype=float))
 
     def _customize_spec(self, spec, mujoco) -> None:
         mesh = spec.add_mesh()
@@ -431,7 +453,7 @@ def run(episode: Path, device: str = "auto", n_grid: int = 192, video: bool = Tr
         eta: float = GLYCEROL["eta"], volume_ml: float = VOLUME_ML,
         receiver_xy=RECEIVER_XY, table_z: float = TABLE_Z,
         cup_shift_xy=CUP_SHIFT_XY, grasp_roll_deg: float = GRASP_ROLL_DEG,
-        hold: float = 0.0) -> dict:
+        hold: float = 0.0, cup_reference_pos=None, cup_reference_quat=None) -> dict:
     liq = dict(GLYCEROL, eta=eta)
     # the settled cache lives with the episode; a planning variant (hold > 0) writes its
     # own directory, and the real video cannot be paired with it
@@ -443,7 +465,9 @@ def run(episode: Path, device: str = "auto", n_grid: int = 192, video: bool = Tr
     receiver_pos = np.array([receiver_xy[0], receiver_xy[1], table_z])
 
     arm = RecordedPanda(ep, write_cup_obj(SPEC, out / "cup_render.obj"),
-                        cup_shift_xy=cup_shift_xy, grasp_roll_deg=grasp_roll_deg, hold=hold)
+                        cup_shift_xy=cup_shift_xy, grasp_roll_deg=grasp_roll_deg, hold=hold,
+                        cup_reference_pos=cup_reference_pos,
+                        cup_reference_quat=cup_reference_quat)
     cam = side_camera_view(ep["meta"])
     arm.model.vis.global_.fovy = cam["fovy"]
     arm.cam.lookat[:] = cam["lookat"]
@@ -683,10 +707,16 @@ if __name__ == "__main__":
     ap.add_argument("--hold", type=float, default=0.0,
                     help="planning: hold the cup at the roll's end pose for this many "
                          "seconds before the recorded return (the robot's dwell_s)")
+    ap.add_argument("--geometry-json", type=Path,
+                    help="session geometry: table_z, receiver_xy, cup_reference_pos/quat (wxyz)")
     args = ap.parse_args()
+    geo = json.loads(args.geometry_json.read_text()) if args.geometry_json else {}
     run(episode=args.episode.resolve(), device=args.device,
         n_grid=96 if args.fast else args.n_grid, video=not args.skip_video,
         side_by_side=not args.no_side_by_side, rebake=args.rebake, frames=args.frames,
         eta=args.eta, volume_ml=args.volume_ml,
-        receiver_xy=tuple(args.receiver_xy), table_z=args.table_z,
-        cup_shift_xy=tuple(args.cup_shift), grasp_roll_deg=args.grasp_roll, hold=args.hold)
+        receiver_xy=tuple(geo.get("receiver_xy", args.receiver_xy)),
+        table_z=geo.get("table_z", args.table_z),
+        cup_shift_xy=tuple(args.cup_shift), grasp_roll_deg=args.grasp_roll, hold=args.hold,
+        cup_reference_pos=geo.get("cup_reference_pos"),
+        cup_reference_quat=geo.get("cup_reference_quat"))

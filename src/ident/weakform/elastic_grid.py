@@ -226,6 +226,7 @@ def hencky_cauchy_columns(F: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     Identifying such data with the corotated columns is exact only at small strain;
     at the von Mises cap of about 2 percent deviatoric strain the difference is 
     second order but measurable.
+    """
     F = np.asarray(F, dtype=float)
     U, sig, _ = np.linalg.svd(F)
     eps = np.log(np.clip(sig, 1e-12, None))
