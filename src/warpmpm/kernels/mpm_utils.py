@@ -1253,13 +1253,22 @@ def g2p_particle(state: MPMStateStruct, model: MPMModelStruct, dt: float, p: int
                     new_F = new_F + wp.outer(grid_v, dweight)
 
         state.particle_v[p] = new_v
-        x_new = state.particle_x[p] + dt * new_v
+        # A slow substep can be smaller than one float32 ULP of world position.
+        # Retain the lost increment rather than freezing or systematically
+        # rounding the motion. This changes arithmetic, not the integration law.
+        x_old = state.particle_x[p]
+        dx = dt * new_v - state.particle_x_roundoff[p]
+        x_new = x_old + dx
+        x_error = (x_new - x_old) - dx
         if model.particle_clip_cells > 0.0:
             # the advected position is clamped into
             # [clip * dx, grid_lim - clip * dx], a hard backstop behind the wall
             # clamp that keeps a particle's stencil inside the grid
             cb = model.particle_clip_cells * model.dx
             hi = model.grid_lim - cb
+            for axis in range(3):
+                if x_new[axis] < cb or x_new[axis] > hi:
+                    x_error[axis] = 0.0
             x_new = wp.vec3(
                 wp.clamp(x_new[0], cb, hi),
                 wp.clamp(x_new[1], cb, hi),
@@ -1269,14 +1278,16 @@ def g2p_particle(state: MPMStateStruct, model: MPMModelStruct, dt: float, p: int
             lx = wp.float(model.grid_dim_x) * model.dx
             if x_new[0] < 0.0:
                 x_new = wp.vec3(x_new[0] + lx, x_new[1], x_new[2])
+                x_error[0] = 0.0
             if x_new[0] >= lx:
                 x_new = wp.vec3(x_new[0] - lx, x_new[1], x_new[2])
+                x_error[0] = 0.0
         state.particle_x[p] = x_new
+        state.particle_x_roundoff[p] = x_error
         state.particle_C[p] = new_C
         # new_F is the discrete velocity gradient L with L_ij = dv_i/dx_j
         # (sum_node v_node[i] * d w_node/dx_j). Stored for the TrackEUCLID dump.
         state.particle_L[p] = new_F
-        I33 = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
         F_rate = new_F
         if model.mls_transfer != 0:
             # MLS-MPM advances F with the APIC affine matrix C rather than with
@@ -1284,7 +1295,12 @@ def g2p_particle(state: MPMStateStruct, model: MPMModelStruct, dt: float, p: int
             # summed sense but differ per particle. particle_L keeps L either
             # way, which is what the TrackEUCLID dump documents.
             F_rate = new_C
-        F_tmp = (I33 + F_rate * dt) * state.particle_F[p]
+        # Form the small increment before adding it to F: rounding I + dt L
+        # first can erase slow strain completely. Compensate the final addition.
+        F_old = state.particle_F[p]
+        dF = (F_rate * F_old) * dt - state.particle_F_roundoff[p]
+        F_tmp = F_old + dF
+        state.particle_F_roundoff[p] = (F_tmp - F_old) - dF
         state.particle_F_trial[p] = F_tmp
 
         if model.update_cov_with_F:
@@ -1347,6 +1363,16 @@ def stress_update_particle(state: MPMStateStruct, model: MPMModelStruct, dt: flo
             state.particle_F[p] = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
         else:  # jelly (0)
             state.particle_F[p] = state.particle_F_trial[p]
+
+        # A constitutive projection replaces the elastic state; the residual
+        # from its pre-projection integration no longer belongs to that state.
+        projected = False
+        for row in range(3):
+            for col in range(3):
+                if state.particle_F[p][row, col] != state.particle_F_trial[p][row, col]:
+                    projected = True
+        if projected:
+            state.particle_F_roundoff[p] = wp.mat33(0.0)
 
         # also compute stress here
         J = wp.determinant(state.particle_F[p])
@@ -1735,6 +1761,7 @@ def rigid_particle_update(
         # velocity: v_cm + omega x r
         state.particle_v[p] = v_cm + wp.cross(omega, r)
         state.particle_x[p] = x_p
+        state.particle_x_roundoff[p] = wp.vec3(0.0)
 
         # C = skew(omega) so APIC scatter uses the correct linear velocity field
         ox = omega[0]
@@ -1744,6 +1771,7 @@ def rigid_particle_update(
 
         # rigid, no deformation
         state.particle_F[p] = wp.mat33(1.0, 0.0, 0.0,  0.0, 1.0, 0.0,  0.0, 0.0, 1.0)
+        state.particle_F_roundoff[p] = wp.mat33(0.0)
 
 
 # ---- active-block sparse compute (docs/performance.md): two-level block sparsity ---

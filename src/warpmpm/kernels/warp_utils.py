@@ -117,8 +117,10 @@ class MPMStateStruct:
     ###### essential #####
     # particle
     particle_x: wp.array(dtype=wp.vec3)  # current position
+    particle_x_roundoff: wp.array(dtype=wp.vec3)  # compensated advection residual
     particle_v: wp.array(dtype=wp.vec3)  # particle velocity
     particle_F: wp.array(dtype=wp.mat33)  # particle elastic deformation gradient
+    particle_F_roundoff: wp.array(dtype=wp.mat33)  # compensated elastic increment residual
     particle_init_cov: wp.array(dtype=float)  # initial covariance matrix
     particle_cov: wp.array(dtype=float)  # current covariance matrix
     particle_F_trial: wp.array(

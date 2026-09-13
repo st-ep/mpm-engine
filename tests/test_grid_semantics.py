@@ -1,7 +1,7 @@
 """Tests for the engine's grid semantics options (set_grid_semantics).
 
 Three things are checked. First, that the options are opt-in: a
-standard scene stepped with all of them off reproduces the pre-change engine's
+standard scene stepped with all of them off reproduces the reference engine's
 trajectory bit for bit, so the added kernel branches cannot have moved the
 default arithmetic. Second, that the freeslip wall clamp is approach-only, which
 is the point of it: a particle thrown at a wall is arrested, and a particle
@@ -9,9 +9,10 @@ moving away from a wall keeps its whole outward velocity, where a collider
 "slip" plane holds it against the wall instead. Third, that the empty-node
 gravity and the eps-softened mass division are in force where they should be.
 
-The reference for the bitwise test is a stored digest of the pre-change engine's
-own output for that scene, taken at commit 409ccb9 (the commit before these
-options landed) on this machine's CPU backend. A mismatch means either that the
+The reference was deliberately updated for compensated position and F integration
+after test_slow_advection demonstrated lost motion in the old arithmetic. The
+previous commit-409ccb9 digest was verified with the untouched source before this
+update. A mismatch means either that the
 default arithmetic moved or that the digest is being read on a different float
 backend; the failure message says so, because only the first reading is a bug.
 """
@@ -86,27 +87,28 @@ def _run(nclaw, steps=60, dt=5.0e-4, v0_scale=1.0):
 
 
 # sha256 of the contiguous float32 bytes of x, v and F after 60 substeps of the
-# scene in _run, measured on the engine at commit 409ccb9 (before the NCLaw mode)
+# scene in _run, with compensated integration (2026-09-12). The independent
+# manufactured-motion tests justify this intentional change in arithmetic.
 PRE_CHANGE_DIGEST = {
-    "x": "0d25b5021b03cb0677ccac3784d931463443340ab62ef3c61fe982f2990b3108",
-    "v": "9507262707ce329381518240fb37f2fac6850583de87f0d884164b8ffb3448a3",
-    "F": "82f2dff77ca80483bf5d0db84d6b19bd09af8f7c83734e4ace0e9db4886bb894",
+    "x": "38847ebb325f8ddcc402dd061b89b5e6db2816d8dc7b096926d2e9a754e67086",
+    "v": "2a16f9cf64e23a4694c2699ed2da11f3f8dcb276b15379fd5d93b4c7b3dedee8",
+    "F": "994a4ec6a309e123b0085210f0ae8f7b6df5f71e6d867aa7b198649e99e664f6",
 }
 
 
 def test_mode_off_is_bit_identical():
-    """With the mode off, the default pipeline must reproduce the pre-change
+    """With the mode off, the default pipeline must reproduce the reference
     engine's output bit for bit: the mode's kernel branches are unreachable."""
     out = dict(zip(("x", "v", "F"), _run(None), strict=True))
     got = {k: hashlib.sha256(np.ascontiguousarray(
         v.astype(np.float32)).tobytes()).hexdigest() for k, v in out.items()}
     if got != PRE_CHANGE_DIGEST:
         pytest.fail(
-            "default-path output changed against the pre-change reference "
+            "default-path output changed against the compensated reference "
             f"({platform.machine()} / {platform.system()}): {got} vs "
             f"{PRE_CHANGE_DIGEST}. Either the default arithmetic moved (a bug) "
             "or this is a different float backend than the one the digest was "
-            "taken on; check against commit 409ccb9 before editing the digest.")
+            "taken on; investigate the arithmetic before editing the digest.")
 
     # the NCLaw kernel with every behavior disabled differs from the default only
     # in the mass threshold (m > 0 instead of m > 1e-15) and in that the walls

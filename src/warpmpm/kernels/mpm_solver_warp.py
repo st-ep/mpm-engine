@@ -350,6 +350,10 @@ class MPM_Simulator_WARP:
             shape=n_particles, dtype=wp.vec3, device=device
         )  # current position
 
+        self.mpm_state.particle_x_roundoff = wp.zeros(
+            shape=n_particles, dtype=wp.vec3, device=device
+        )
+
         self.mpm_state.particle_v = wp.zeros(
             shape=n_particles, dtype=wp.vec3, device=device
         )  # particle velocity
@@ -357,6 +361,10 @@ class MPM_Simulator_WARP:
         self.mpm_state.particle_F = wp.zeros(
             shape=n_particles, dtype=wp.mat33, device=device
         )  # particle F elastic
+
+        self.mpm_state.particle_F_roundoff = wp.zeros(
+            shape=n_particles, dtype=wp.mat33, device=device
+        )
 
         self.mpm_state.particle_R = wp.zeros(
             shape=n_particles, dtype=wp.mat33, device=device
@@ -1708,9 +1716,11 @@ class MPM_Simulator_WARP:
         perm = np.asarray(perm)
         assert perm.shape == (n,)
         st = self.mpm_state
-        vec3_arrays = [st.particle_x, st.particle_v, st.particle_x_ref]
+        vec3_arrays = [st.particle_x, st.particle_v, st.particle_x_ref,
+                       st.particle_x_roundoff]
         mat33_arrays = [st.particle_F, st.particle_F_trial, st.particle_R,
-                        st.particle_stress, st.particle_C, st.particle_L]
+                        st.particle_stress, st.particle_C, st.particle_L,
+                        st.particle_F_roundoff]
         float_arrays = [st.particle_vol, st.particle_mass, st.particle_density,
                         st.particle_Jp]
         # These model arrays are indexed by particle, unlike E/nu/bulk and the
@@ -1792,6 +1802,7 @@ class MPM_Simulator_WARP:
         if tensor_x is not None:
             src = torch2warp_vec3(tensor_x.detach(), dvc=device)
             wp.copy(self.mpm_state.particle_x, src)
+            self.mpm_state.particle_x_roundoff.zero_()
             wp.synchronize_device(device)   # the source aliases a caller tensor
 
     # clone = True makes a copy, not necessarily needed
@@ -1815,6 +1826,7 @@ class MPM_Simulator_WARP:
             tensor_F = torch.reshape(tensor_F, (-1, 3, 3))  # arranged by rowmajor
             src = torch2warp_mat33(tensor_F.detach(), dvc=device)
             wp.copy(self.mpm_state.particle_F, src)
+            self.mpm_state.particle_F_roundoff.zero_()
             wp.synchronize_device(device)   # the source aliases a caller tensor
 
     # clone = True makes a copy, not necessarily needed
