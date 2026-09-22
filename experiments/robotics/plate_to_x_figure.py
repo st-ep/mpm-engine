@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pyvista as pv
 from matplotlib.lines import Line2D
-from matplotlib.patches import FancyArrowPatch
 
 from experiments.robotics import x_common_report as common
 from experiments.robotics import x_motion_shaping as core
@@ -19,48 +18,61 @@ from experiments.robotics import x_motion_search as search
 from experiments.robotics.x_shaping_report import render as render_action
 from experiments.robotics.plastic_shaping_study import save_json
 
-IDENTIFICATION = core.ROOT / 'out/plate_observable_physical_preload_20260912'
-SHAPING = core.ROOT / 'out/plate_to_x_20260912_grid80'
+IDENTIFICATION = core.ROOT / 'out/press_separated_20260913/monotonic320'
+EVIDENCE = core.ROOT / 'out/press_paper_update_20260913'
+SHAPING = Path('/dev/shm/press_paper_update_20260913/execution80')
 ROBOT = core.ROOT / 'out/x_common_identification_study_20260910/franka/panda_model_snapshot/panda.xml'
 
 
 def panel_a(ax, images):
     common.panel_frame(ax, '(a) Identification with a plate press')
     times = np.load(IDENTIFICATION / 'inputs_A/time.npy')
-    views = [('A', 2.6, 'Press (A)'), ('A', 3.8, 'Released A'), ('B', 3.8, 'Released B')]
+    views = [('A', .52, 'Early press (A)'), ('A', 1.72, 'Deep press (A)'), ('B', 1.72, 'Deep press (B)')]
+    camera_archive = np.load(EVIDENCE / 'plate_camera_frames.npz')
+    camera_metadata = {r['key']: r for r in core.read(EVIDENCE / 'plate_camera_frames.json')}
     height, width, gap = .85, 1.02, .12
     left = (common.PANEL_WIDTH - 3 * width - 2 * gap) / 2
     records = []
     for index, (k, t, title) in enumerate(views):
-        file = IDENTIFICATION / f'inputs_{k}/camera_0.npy'
-        frames = np.load(file, mmap_mode='r')
+        file = EVIDENCE / 'plate_camera_frames.npz'
         frame = int(np.argmin(abs(times - t)))
+        key = f'{k}_{frame:03d}'
         # Identical sensor, crop and display scale; no per-material recoloring.
-        picture = frames[frame, 180:1080, 100:1180]
+        picture = camera_archive[key][180:1080, 100:1180]
         ia = common.image_at(ax, np.repeat(picture[..., None], 3, axis=-1),
                              [left, .015, width, height])
-        if index == 0:
-            # A single motion arrow in the clear space above the upper plate.
-            # Compensate for the arrowhead's stroke inset so its visible tip
-            # meets the plate's top edge at image y=174.
-            ia.add_patch(FancyArrowPatch((540, 12), (540, 186),
-                arrowstyle='-|>', mutation_scale=11, lw=1.25,
-                color='#45677a', shrinkA=0, shrinkB=0, zorder=5))
+        if index == 1:
+            # Locate the upper plate's top silhouette at the arrow's x coordinate.
+            # Literal polygon endpoints avoid plotting-library arrowhead insets.
+            from matplotlib.patches import Polygon
+            column = picture[:, 540].astype(float)
+            edge = int(np.flatnonzero(np.diff(column) < -40)[0] + 1)
+            assert 100 < edge < 240, edge
+            tip = np.array([540., float(edge)])
+            y0, half_shaft, half_head, head = 12., 7., 30., 48.
+            vertices = [(540-half_shaft,y0),(540+half_shaft,y0),
+                        (540+half_shaft,edge-head),(540+half_head,edge-head),
+                        tuple(tip),(540-half_head,edge-head),(540-half_shaft,edge-head)]
+            ia.add_patch(Polygon(vertices,closed=True,facecolor='#45677a',
+                                 edgecolor='none',zorder=5))
         ax.text(left + width / 2, common.TOP_HEIGHT - .30, title,
                 ha='center', va='center', fontsize=7.4, color=common.COLORS[k])
         plt.imsave(images / f'plate_view_{index}.png', picture, cmap='gray', vmin=0, vmax=255)
         records.append(dict(material=k, source=str(file), frame=frame, time_s=float(times[frame]),
-                            crop=[180, 1080, 100, 1180], grayscale_unchanged=True))
+                            crop=[180, 1080, 100, 1180], grayscale_unchanged=True,
+                            archive_key=key, original=camera_metadata[key],
+                            motion_arrow=(dict(visible_tip_px=tip.tolist(),plate_top_edge_px=edge,
+                                               vertices_px=[list(v) for v in vertices]) if index == 1 else None)))
         left += width + gap
     save_json(images / 'plate_views.json', records)
 
 
 def panel_b(panel):
-    common.panel_frame(panel, '(b) Held-out plate-force prediction')
+    common.panel_frame(panel, '(b) Validation on a deeper press')
     ax = common.inset_at(panel, [.35, .265, common.PANEL_WIDTH - .39, .705])
     for k in 'AB':
-        reference = np.genfromtxt(IDENTIFICATION / f'truth_{k}/force.csv', names=True, delimiter=',')
-        prediction = np.genfromtxt(IDENTIFICATION / f'prediction_{k}/force.csv', names=True, delimiter=',')
+        reference = np.genfromtxt(EVIDENCE / f'force_validation/reference_{k}_force.csv', names=True, delimiter=',')
+        prediction = np.genfromtxt(EVIDENCE / f'force_validation/prediction_{k}_force.csv', names=True, delimiter=',')
         np.testing.assert_array_equal(reference['time'], prediction['time'])
         keep = reference['time'] >= 3.9
         t, f = reference['time'][keep] - 3.9, reference['Fz'][keep]
@@ -78,9 +90,9 @@ def panel_b(panel):
     ax.spines[['top', 'right']].set_visible(False)
     ax.spines[['left', 'bottom']].set_linewidth(.7)
     ax.grid(axis='y', alpha=.15)
-    ax.legend(handles=[Line2D([], [], color='#333333', lw=1.2, label='True'),
+    ax.legend(handles=[Line2D([], [], color='#333333', lw=1.2, label='Reference'),
         Line2D([], [], color='#333333', marker='o', markerfacecolor='white', lw=0,
-               markersize=2.5, label='Identified')], loc='upper left', fontsize=7.4,
+               markersize=2.5, label='Prediction')], loc='upper left', fontsize=7.4,
                frameon=False, handlelength=1.5, labelspacing=.35, borderaxespad=.2)
 
 
@@ -90,7 +102,7 @@ def report(output):
     models = core.read(SHAPING / 'inputs/models.json')
     for name, threshold in [('A', 1000.), ('B', 10000.)]:
         assert models['true_' + name] == dict(E=80000., nu=.3, yield_stress=threshold)
-        fit = core.read(IDENTIFICATION / f'divfree_{name}/identification.json')
+        fit = core.read(IDENTIFICATION / f'separated_{name}/identification.json')
         assert models['identified_' + name] == dict(E=fit['E_pa'], nu=.3, yield_stress=fit['yield_pa'])
     manifest = core.read(SHAPING / 'checksums.json')
     for rel in ['summary.json', 'protocol.json', 'execution_plan.json',
@@ -167,8 +179,8 @@ def report(output):
         pictures[key] = plt.imread(images / (key + '.png'))
         assert pictures[key].shape[:2] == mask.shape
     columns = [.54, 1.68, 2.84]
-    for x, label in zip(columns, ['Target', 'Plan using matched ID', 'Plan using swapped ID']):
-        ax.text(x, common.BOTTOM_HEIGHT - .30, label, ha='center', va='center', fontsize=7.)
+    for x, label in zip(columns, ['Target', 'Matched ID', 'Swapped ID']):
+        ax.text(x, common.BOTTOM_HEIGHT - .30, label, ha='center', va='center', fontsize=7.4)
     image_height = .72
     image_width = image_height * mask.shape[1] / mask.shape[0]
     for row, actual in enumerate('AB'):
@@ -198,11 +210,14 @@ def report(output):
         shutil.copy2(Path(__file__).with_name(name), source / name)
     save_json(output / 'provenance.json', dict(identification=str(IDENTIFICATION), shaping=str(SHAPING),
         shaping_manifest_sha256=core.digest(SHAPING / 'checksums.json'),
-        identification_fits={k: core.digest(IDENTIFICATION / f'divfree_{k}/identification.json') for k in 'AB'},
-        input_camera_sha256={k: core.digest(IDENTIFICATION / f'inputs_{k}/camera_0.npy') for k in 'AB'},
+        durable_archive_metadata=str(EVIDENCE / 'encrypted_archive.json'),
+        identification_fits={k: core.digest(IDENTIFICATION / f'separated_{k}/identification.json') for k in 'AB'},
+        input_camera_archive_sha256=core.digest(EVIDENCE / 'plate_camera_frames.npz'),
+        input_camera_metadata=core.read(EVIDENCE / 'plate_camera_frames.json'),
         plate_views=core.read(images / 'plate_views.json'),
-        force_files={f'{kind}_{k}': core.digest(IDENTIFICATION / f'{kind}_{k}/force.csv')
-                     for kind in ['truth', 'prediction'] for k in 'AB'},
+        force_files={f'{kind}_{k}': core.digest(EVIDENCE / f'force_validation/{kind}_{k}_force.csv')
+                     for kind in ['reference', 'prediction'] for k in 'AB'},
+        force_validation=core.read(EVIDENCE / 'force_validation/provenance.json'),
         actions=action_records, results=records, outcome_calibration=calibration,
         outcome_images='All four newly executed grid80 outcomes; one common scale and crop',
         robot_scope='Kinematic hand illustration at recorded collider poses, not hardware execution',
@@ -215,8 +230,9 @@ def report(output):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--evidence', type=Path, default=EVIDENCE)
     parser.add_argument('--shaping', type=Path, default=SHAPING)
     parser.add_argument('--identification', type=Path, default=IDENTIFICATION)
     args = parser.parse_args()
-    SHAPING, IDENTIFICATION = args.shaping, args.identification
+    SHAPING, IDENTIFICATION, EVIDENCE = args.shaping, args.identification, args.evidence
     report(args.output)
