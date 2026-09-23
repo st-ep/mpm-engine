@@ -3,7 +3,7 @@ Public entry draw_method01(t) returns a 1280x720 PIL frame. Main video uses it.
 """
 from pathlib import Path
 from functools import lru_cache
-import argparse,json,math,subprocess
+import argparse,json,math,subprocess,sys
 import numpy as np
 import cv2
 from matplotlib.colors import LinearSegmentedColormap
@@ -11,7 +11,10 @@ from scipy.interpolate import PchipInterpolator
 from scipy.ndimage import gaussian_filter1d
 from PIL import Image,ImageDraw,ImageFont,ImageFilter
 from matplotlib import colormaps
-P=Path(__file__).resolve().parent;ROOT=P.parents[3];DURATION=16;FPS=25;S=2
+P=Path(__file__).resolve().parent;ROOT=P.parents[3];DURATION=24;FPS=25;S=2
+sys.path.insert(0,str(P.parent))
+from method_slide_frame import frame_method
+from narrative_captions import caption_at
 BG='#f4f6f7';INK='#21333e';TEAL='#167b76';BLUE='#2375aa';ORANGE='#c96932';MUTED='#566975';LINE='#d9e1e5'
 RAY_GREEN='#63c86b';RAY_BLUE='#55b9ec'
 MIDDLE_SHIFT=17  # Equal 41 px gaps: 326..367 and 966..1007.
@@ -324,6 +327,8 @@ def static_frame():
  return im
 
 LOOP_SECONDS=4.0
+RECONSTRUCTION_START=4.0
+INPUTS_START=16.0
 PLAYBACK_RATE=.5
 
 def playback_times(t):
@@ -402,32 +407,34 @@ def draw_method01(t,reveal=True):
  im.paste(Image.new('RGB',middle.size,BG),bounds[:2])
  im.paste(middle,((350+MIDDLE_SHIFT)*S,137*S))
  if reveal:
-  for box,start in [((367,137,968,693),4),((1006,137,1245,693),8)]:
+  for box,start in [((367,137,968,693),RECONSTRUCTION_START),((1006,137,1245,693),INPUTS_START)]:
    opacity=FAINT_OPACITY+(1-FAINT_OPACITY)*reveal_progress(t,start)
    bounds=tuple(v*S for v in box);tile=im.crop(bounds)
    im.paste(Image.blend(Image.new('RGB',tile.size,BG),tile,opacity),bounds[:2])
  # Matching full-height brackets and arrows in equal gaps, outside the cameras.
- for edge,spine,target,start in [(333,343,367,4),(973,983,1007,8)]:
+ for edge,spine,target,start in [(333,343,367,RECONSTRUCTION_START),(973,983,1007,INPUTS_START)]:
   alpha=reveal_progress(t,start) if reveal else 1.
   if alpha<=0:continue
   col=tuple(round(a*(1-alpha)+b*alpha) for a,b in zip((244,246,247),(22,123,118)))
   c.line([(edge,137),(spine,137),(spine,691),(edge,691)],col,1.5)
   c.dot((spine,DIVIDER_Y),2.4,col)
   c.arrow((spine,DIVIDER_Y),(target,DIVIDER_Y),col,2.4,8)
+ caption=caption_at('observe',t)
+ im=frame_method(im,1,'From visual observations to 3D motion',caption)
  return im.resize((1280,720),Image.Resampling.LANCZOS)
 
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--preview',action='store_true');parser.add_argument('--render',action='store_true');args=parser.parse_args()
  if args.preview:
-  for t in [0,3.5,7,10.5,13.5]:draw_method01(t).save(P/f'animated_method01_{t:g}s.png')
-  draw_method01(10.5).save(P/'method01_animated_poster.png')
+  for t in [0,3.5,7,11,15,19,23]:draw_method01(t).save(P/f'animated_method01_{t:g}s.png')
+  draw_method01(18.5).save(P/'method01_animated_poster.png')
  if args.render:
   out=P/'method01_animated.mp4';proc=subprocess.Popen(['ffmpeg','-y','-v','error','-f','rawvideo','-pix_fmt','rgb24','-s','1280x720','-r',str(FPS),'-i','-','-an','-c:v','libx264','-preset','fast','-crf','17','-threads','4','-pix_fmt','yuv420p','-movflags','+faststart',str(out)],stdin=subprocess.PIPE)
   for i in range(DURATION*FPS):
    proc.stdin.write(draw_method01(i/FPS).tobytes())
    if i%75==0:print(f'Rendered {i}/{DURATION*FPS} frames',flush=True)
   proc.stdin.close();assert proc.wait()==0;print(out,flush=True)
- P.joinpath('animation_provenance.json').write_text(json.dumps({'scope':'Display animation only. No physics simulation or material fit. Existing stereo kinematics are re-evaluated without changing parameters and checked against frozen display frame.','duration_s':DURATION,'fps':FPS,'hardware_source_time_s':[.05,2.0],'stereo_source_time_s':[.10,1.90],'stage_reveal':'Middle stage and left bracket/arrow fade in at 4 s; input stage and gathering bracket/arrow at 8 s. Smooth 0.6 s fades from 7 percent stage opacity; connectors start invisible. Both final loops have all stages visible. Flow prior label removed; Same volume and the divergence-free equation remain. Camera rays use traveling chevrons toward the lens, presentation-only.', 'playback':'Four-second forward loops at 0.5x source speed; all panels, trails, force curve and cursors reset together. Hardware starts at source 0.05 s, stereo at 0.10 s. Hardware holds its 2.0 s endpoint for the final 0.1 s of each loop; stereo holds its 1.90 s endpoint for the final 0.4 s. No reverse footage or additional trials. The 16-second section contains four complete loops. This is not a synchronized material-response comparison; input footage and reconstruction are synchronized within each route.','rgbd_surface':'Framewise display envelope of supplied inferred particles, not directly observed interior motion.','constant_volume':'Middle panel now shares the exact same saved-particle surface, source time and fixed scale as both neighboring diagrams. Same volume labels the supplied incompressible reconstruction prior; no independent affine deformation is used.','stereo':'One enlarged fixed camera crop; both calibrated cameras underlie saved triangulation. Three feature IDs [828,814,361] appear on a local glass-like surface patch. Its fixed material-domain grid interpolates saved valid surface tracks using reference-XZ Delaunay barycentric weights, with no extrapolation. A 2 mm constant offset behind that surface supplies schematic depth only and follows the front; no interior dynamics is inferred here. The schematic-depth label is omitted in the presentation; its construction remains documented here. No dense cloud, tiny triangle texture, or full specimen block is shown. Camera and scale remain fixed. Correspondence links use full feature colors at 2.5 px, matching camera-ray thickness. The separate square-symmetric interior field is unchanged. Its fixed magnified cutaway shows four persistent strictly interior nodes with dark blue history trails, hollow initial positions and filled current positions. The tiny locator is omitted for readability; the local subvolume and fixed magnification are documented in provenance. No colored observed features appear in this panel. Position and geometry share the same magnification; displacement is not amplified. The field formula sits below the diagram.','force':'Plot height 134 px, increased upward with more space below the title, with X-axis at y=637 aligned to the top of the lower method captions. Orange curve (#c96932, matching the video force palette). Recorded incremental normal robot force from ep0001 robot_force.npz. Baseline-subtracted, not a sketch or command; no independent calibration/tool inertia correction. Cursor follows the hardware source time.','assumptions':'Hardware handoff: axisymmetry, conserved volume, minimum-dissipation incompressible flow with no-slip contacts. Stereo: approximate square-symmetric field fitted to surface displacement.','left_panel':'Approved refined compact camera A installed in both positions. The lower camera retains its approved 25-degree tilt. The upper camera mirrors it vertically: both lenses stay left, with opposite body diagonals. The same affine transform places both the sprite and lens endpoint. Viewing rays are 2.5 px wide with 8 px arrowheads, light grass green (#63c86b) above and sky blue (#55b9ec) below. Camera generator, sprite, geometry metadata and stereo source images are saved on persistent storage. Hardware fixed raw crop [330,125,590,286]; simulation fixed crop [33,180,1247,1052], with taller 270x194 display centered on y=550. Both show the upper plate and entire specimen vertically from the start. Schematic viewing rays move with visible surface bounds and stereo features; no RGB-D particle identity is claimed.',
+ P.joinpath('animation_provenance.json').write_text(json.dumps({'scope':'Display animation only. No physics simulation or material fit. Existing stereo kinematics are re-evaluated without changing parameters and checked against frozen display frame.','duration_s':DURATION,'fps':FPS,'hardware_source_time_s':[.05,2.0],'stereo_source_time_s':[.10,1.90],'stage_reveal':'Middle stage and left bracket/arrow fade in at 4 s; input stage and gathering bracket/arrow at 16 s. The reconstruction-only interval is twelve seconds (three loops), eight seconds longer than before. Smooth 0.6 s fades from 7 percent stage opacity; connectors start invisible. Both final loops have all stages visible. Flow prior label removed; Same volume and the divergence-free equation remain. Camera rays use traveling chevrons toward the lens, presentation-only.', 'playback':'Four-second forward loops at 0.5x source speed; all panels, trails, force curve and cursors reset together. Hardware starts at source 0.05 s, stereo at 0.10 s. Hardware holds its 2.0 s endpoint for the final 0.1 s of each loop; stereo holds its 1.90 s endpoint for the final 0.4 s. No reverse footage or additional trials. The 24-second section contains six complete loops. This is not a synchronized material-response comparison; input footage and reconstruction are synchronized within each route.','rgbd_surface':'Framewise display envelope of supplied inferred particles, not directly observed interior motion.','constant_volume':'Middle panel now shares the exact same saved-particle surface, source time and fixed scale as both neighboring diagrams. Same volume labels the supplied incompressible reconstruction prior; no independent affine deformation is used.','stereo':'One enlarged fixed camera crop; both calibrated cameras underlie saved triangulation. Three feature IDs [828,814,361] appear on a local glass-like surface patch. Its fixed material-domain grid interpolates saved valid surface tracks using reference-XZ Delaunay barycentric weights, with no extrapolation. A 2 mm constant offset behind that surface supplies schematic depth only and follows the front; no interior dynamics is inferred here. The schematic-depth label is omitted in the presentation; its construction remains documented here. No dense cloud, tiny triangle texture, or full specimen block is shown. Camera and scale remain fixed. Correspondence links use full feature colors at 2.5 px, matching camera-ray thickness. The separate square-symmetric interior field is unchanged. Its fixed magnified cutaway shows four persistent strictly interior nodes with dark blue history trails, hollow initial positions and filled current positions. The tiny locator is omitted for readability; the local subvolume and fixed magnification are documented in provenance. No colored observed features appear in this panel. Position and geometry share the same magnification; displacement is not amplified. The field formula sits below the diagram.','force':'Plot height 134 px, increased upward with more space below the title, with X-axis at y=637 aligned to the top of the lower method captions. Orange curve (#c96932, matching the video force palette). Recorded incremental normal robot force from ep0001 robot_force.npz. Baseline-subtracted, not a sketch or command; no independent calibration/tool inertia correction. Cursor follows the hardware source time.','assumptions':'Hardware handoff: axisymmetry, conserved volume, minimum-dissipation incompressible flow with no-slip contacts. Stereo: approximate square-symmetric field fitted to surface displacement.','left_panel':'Approved refined compact camera A installed in both positions. The lower camera retains its approved 25-degree tilt. The upper camera mirrors it vertically: both lenses stay left, with opposite body diagonals. The same affine transform places both the sprite and lens endpoint. Viewing rays are 2.5 px wide with 8 px arrowheads, light grass green (#63c86b) above and sky blue (#55b9ec) below. Camera generator, sprite, geometry metadata and stereo source images are saved on persistent storage. Hardware fixed raw crop [330,125,590,286]; simulation fixed crop [33,180,1247,1052], with taller 270x194 display centered on y=550. Both show the upper plate and entire specimen vertically from the start. Schematic viewing rays move with visible surface bounds and stereo features; no RGB-D particle identity is claimed.',
  'color':'Displacement magnitude from displayed initial positions at source t=0.05 s, fixed scale in mm over the interval.',
  'display_frame':'RGB-D diagrams use a laterally translating display origin to center the particle centroid in XY. World Z, shape, scale and source timing are unchanged. Source positions, force and the original robot-frame displacement colors remain unchanged. Trails use the same centered display frame. This display convention is documented here; the small slide footer was removed at user request. Initial source motion audit is in initial_motion_audit.json.',
  'advection':'Five persistent particle IDs with higher-contrast fading history trails and a light underlay, from the displayed initial time; no future-position arrows.',

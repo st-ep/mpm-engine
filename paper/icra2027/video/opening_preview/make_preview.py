@@ -17,9 +17,10 @@ def text(x, y, s, size=24, color=ink, bold=False, anchor=None):
 def line(x0,y0,x1,y1,c,w=1):
     d.line((x0*S,y0*S,x1*S,y1*S),fill=c,width=w*S)
 # Single baseline: the full paper title remains intact.
-text(44,77,'FORM',54,teal,True,'ls')
-text(227,77,'Robot Manipulation through Direct Material Law Identification',36,ink,True,'ls')
-line(44,104,1236,104,'#d9e1e5')
+text(44,65,'FORM',54,teal,True,'ls')
+text(227,65,'Robot Manipulation through Direct Material Law Identification',36,ink,True,'ls')
+text(44,97,'From Observed Response to Material laws',20,teal,False,'ls')
+line(44,112,1236,112,'#d9e1e5')
 # A pitch: the benefit first, followed by the specific mechanism and transfer.
 text(44,151,'Identify material laws.',43,teal,True)
 text(44,210,'Plan robot actions.',43,teal,True)
@@ -27,7 +28,7 @@ text(44,289,'Same action. Different materials.',27,ink)
 text(44,326,'Different outcomes.',27,ink)
 steps = [
     (392,'01','Observe one interaction','Material motion and contact forces'),
-    (492,'02','Recover an explicit material law','One linear solve using the weak form'),
+    (492,'02','Recover an explicit material law','Linear least squares using the weak form'),
     (620,'03','Use that law to plan robot actions','New tasks and geometries, without refitting'),
 ]
 for y,num,title,subtitle in steps:

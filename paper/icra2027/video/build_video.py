@@ -8,6 +8,9 @@ import argparse, csv, hashlib, json, math, subprocess, sys, shutil
 from functools import lru_cache
 from opening_preview.render_opening import draw_opening, DURATION as OPENING_DURATION, approved_frame
 from method01_preview.render_method01 import draw_method01, DURATION as OBSERVE_DURATION
+sys.path.insert(0,str(Path(__file__).resolve().parent/'method02_preview'))
+from render_method02_animated import draw_frame as draw_method02, DURATION as IDENTIFY_PLAN_DURATION
+from narrative_captions import ALL_SECTIONS,CUES,caption_at,paint_caption,export_captions
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -25,22 +28,20 @@ SOURCES = {k: ROOT/'paper/videos'/v for k,v in {
  'pour':'03_pouring_glycerol_real_vs_simulation.mp4',
  'real':'04_pressing_real_red_yellow_gray.mp4', 'sim':'05_pressing_simulation_red_yellow_gray.mp4',
  'shape':'06_shaping_simulation_matched_swapped.mp4'}.items()}
+SOURCES['bend']=ROOT/'out/strip_texture_20260912/media/texture_bending.mp4'
 TIMELINE = [
  ('opening',OPENING_DURATION,'Identify material laws. Plan robot actions.'),
  ('observe',OBSERVE_DURATION,'Observe one interaction'),
- ('balance',18,'Identify material response'),
- ('plan',10,'Use the model to plan a new task'),
+ ('balance',IDENTIFY_PLAN_DURATION,'Identify the material law and plan robot actions'),
  ('insertion',15,'Elastic rod insertion'),
- ('golf',17,'Putting with a flexible club'),
+ ('golf',15,'Putting with a flexible club'),
  ('simshape',23,'Plan plastic shaping'),
- ('pressing',16,'From real pressing to a predictive model'),
- ('hardware',14,'Execute the planned pinches'),
- ('scans',10,'Evaluate the final hardware shapes'),
- ('pouring',13,'Identify from one glycerol pour'),
- ('volumes',10,'Plan for new target volumes'),
+ ('hardware',30,'Hardware pressing and shaping'),
+ ('pouring',36,'Identify and plan target-volume pouring'),
  ('takeaway',10,'From an interaction to a reusable material model'),
 ]
 TOTAL = sum(d for _,d,_ in TIMELINE)
+assert [(name,duration) for name,duration,_ in TIMELINE]==ALL_SECTIONS
 TEXT_LOG = []
 
 @lru_cache(None)
@@ -92,9 +93,107 @@ class Clip:
         self.index=idx; self.last=Image.fromarray(cv2.cvtColor(f,cv2.COLOR_BGR2RGB));return self.last
 
 CLIPS={}
+@lru_cache(None)
+def insertion_probe_data():
+    with np.load(ASSETS/'insertion_probe.npz') as data:
+        return {key:data[key] for key in data.files}
+
+def insertion_probe(t):
+    """A then B: each actual loading episode, followed by a neutral B hold."""
+    data=insertion_probe_data()
+    material='A' if t<2 else 'B'
+    local=t if t<2 else t-2
+    index=round(min(1,max(0,local/1.6))*40)
+    rgb=data[material][index].astype(float)
+    mask=data[material+'_mask'][index].astype(float)/255
+    tint=max(0,min(1,(4-t)/.2))
+    color=np.array([35,117,170] if material=='A' else [201,105,50])
+    shade=rgb.mean(axis=2,keepdims=True)/180
+    colored=np.clip(shade*color,0,255)
+    alpha=(.72*tint*mask)[...,None]
+    result=np.clip(rgb*(1-alpha)+colored*alpha,0,255).astype('uint8')
+    return Image.fromarray(result),material
+
+@lru_cache(None)
+def insertion_math_token(source,size,color):
+    """Common-size math raster with its baseline retained across color spans."""
+    from matplotlib.mathtext import MathTextParser
+    from matplotlib.font_manager import FontProperties
+    from PIL import ImageColor
+    if color in (INK,'#000000'):
+        color='#000000'
+    raster=MathTextParser('agg').parse('$'+source+'$',dpi=144,prop=FontProperties(size=size))
+    mask=np.asarray(raster.image).copy()
+    rgba=np.empty((*mask.shape,4),dtype=np.uint8)
+    rgba[:,:,:3]=ImageColor.getrgb(color);rgba[:,:,3]=mask
+    tile=Image.fromarray(rgba).resize((round(mask.shape[1]/2),round(mask.shape[0]/2)),Image.Resampling.LANCZOS)
+    return tile,raster.depth/2
+
+def insertion_math(im,parts,center,baseline,size=22,max_width=224):
+    # For the paper's fixed-corotated law with known nu=.45, sigma=E*T_nu(F),
+    # T_nu(F)=(F-R)F^T/[J(1+nu)] + nu*(J-1)*I/[(1+nu)(1-2nu)].
+    # This response is dimensionless; displayed E values include kPa units.
+    tokens=[insertion_math_token(source,size,color) for source,color in parts]
+    width=sum(tile.width for tile,_ in tokens)
+    assert width<=max_width,(parts,width,max_width)
+    x=round(center-width/2)
+    for tile,depth in tokens:
+        im.paste(tile,(x,round(baseline-tile.height+depth)),tile)
+        x+=tile.width
+
 def frame(key,t):
     if key not in CLIPS: CLIPS[key]=Clip(SOURCES[key])
     return CLIPS[key].get(t)
+
+@lru_cache(None)
+def shaping_identification():
+    path=ASSETS/'shaping_identification.npz'
+    if not path.exists():
+        from prepare_shaping_identification import prepare
+        prepare()
+    with np.load(path) as data:
+        frames={k:data[k] for k in data.files}
+    laws={m:json.loads((ROOT/f'out/press_separated_20260913/monotonic320/separated_{m}/identification.json').read_text()) for m in 'AB'}
+    results=json.loads((ROOT/'out/press_paper_update_20260913/execution_summary.json').read_text())['results']
+    errors={(r['material'],r['planned_for']):r['surface_mm'] for r in results}
+    return frames,laws,errors
+
+
+def shaping_law_graph(im,laws,t):
+    """Exact scalar reduction of the saved Hencky/J2 law under monotone
+    isochoric coaxial loading: ||dev tau|| = min(2 mu ||dev log F||, Y).
+    The engine defines Y as the deviatoric Kirchhoff-stress norm, not the
+    sqrt(3/2)-scaled equivalent stress. This is a constitutive response,
+    not a force/strain measurement from the nonuniform pressing experiment.
+    """
+    box(im,(44,411,540,648),fill=WHITE,radius=12,outline=LINE)
+    text(im,(292,422),'Identified material laws',24,TEAL,True,anchor='mt')
+    text(im,(66,458),'Deviatoric stress (kPa)',19,INK)
+    text(im,(324,458),'E: stiffness · Y: yield',19,INK)
+    d=ImageDraw.Draw(im)
+    x0,x1,y0,y1=91,302,593,491
+    def xy(strain,stress):return (x0+(x1-x0)*strain/.22,y0-(y0-y1)*stress/12)
+    for stress in (0,6,12):
+        y=xy(0,stress)[1]
+        d.line((x0,y,x1,y),fill=LINE,width=1)
+        text(im,(82,y),str(stress),18,MUTED,anchor='rm')
+    d.line((x0,y1,x0,y0,x1,y0),fill=MUTED,width=2)
+    for strain in (0,.1,.2):
+        x=xy(strain,0)[0]
+        text(im,(x,599),f'{strain:g}',18,MUTED,anchor='mt')
+    text(im,(195,623),'Deviatoric log strain',18,INK,anchor='mt')
+    for m,y,start,color in [('A',490,1.86,BLUE),('B',568,3.86,ORANGE)]:
+        layer=im.copy();ld=ImageDraw.Draw(layer)
+        E=laws[m]['E_pa']/1000;Y=laws[m]['yield_pa']/1000
+        slope=E/(1+.3)
+        # Include the exact elastic/plastic corner, avoiding sampled rounding.
+        ld.line([xy(0,0),xy(Y/slope,Y),xy(.22,Y)],fill=color,width=4)
+        text(layer,(329,y),m,21,color,True)
+        text(layer,(361,y),f'E = {E:.2f} kPa',20,color)
+        text(layer,(361,y+25),f'Y = {Y:.2f} kPa',20,color)
+        im=Image.blend(im,layer,max(0,min(1,(t-start)/.14)))
+    return im
+
 
 def base(section,title,subtitle,elapsed):
     im=Image.new('RGB',(W,H),BG);d=ImageDraw.Draw(im)
@@ -112,8 +211,9 @@ def base(section,title,subtitle,elapsed):
     return im
 
 def footer(im,s,second=None):
-    text(im,(44,654),s,23,INK,width=1192)
-    if second: text(im,(44,684),second,19,MUTED,width=1192)
+    # Retain scientific/playback qualifications above the shared subtitle band.
+    # The former summary line is now conveyed by the timed spoken captions.
+    text(im,(44,643),second or s,15,MUTED,width=1192)
 
 def comparison(im,key,t,bounds=(44,158,832,470)):
     pic=frame(key,t)
@@ -182,7 +282,7 @@ def prepare_assets():
         fig.text(.5,.5,formula,ha='center',va='center',fontsize=34,color=INK)
         fig.savefig(ASSETS/(name+'.png'),facecolor=WHITE);plt.close(fig)
 
-def draw_section(name,t):
+def draw_section_content(name,t):
     start=sum(d for n,d,_ in TIMELINE[:[n for n,_,_ in TIMELINE].index(name)])
     elapsed=start+t
     if name=='opening':
@@ -190,132 +290,153 @@ def draw_section(name,t):
     if name=='observe':
         return draw_method01(t)
     if name=='balance':
-        im=base('FORM · 02 / IDENTIFY','Recover an explicit material law','Hold the observed motion fixed; impose weak-form momentum balance.',elapsed)
-        box(im,(44,165,526,623));fit(im,still('field'),(63,186,444,350))
-        text(im,(76,550),'Choose spatial test fields',27,TEAL,True)
-        text(im,(76,590),'Arrows show weights, not motion.',22,MUTED)
-        box(im,(550,165,1236,623))
-        stage=0 if t<4.5 else 1 if t<10 else 2
-        text(im,(580,184),'Motion + loads  ≈  weighted internal stress',26,INK,True,width=632)
-        fit(im,still('ls'),(595,235,586,95))
-        lines(im,(584,341),['Motion defines stress responses in A.','Motion and loads define b; θ holds the coefficients.'],24,INK,step=34,width=614)
-        if stage>=1:
-            fit(im,still('solve'),(590,412,607,101))
-            text(im,(584,513),'Least squares when coefficients enter linearly.',24,TEAL,True,width=614)
-        if stage>=2:
-            text(im,(584,565),'Pressing: separate elastic and yielded intervals.',23,MUTED,width=614)
-        if stage==0: footer(im,'Integrating against chosen test fields gives equations for material parameters.',
-                             'Divergence-free fields remove the unknown pressure contribution where applicable.')
-        elif stage==1: footer(im,'Fit the coefficients directly from these equations.',
-                                'The constitutive family and required reconstruction assumptions are specified beforehand.')
-        else: footer(im,'No repeated forward simulations during identification.',
-                        'For the plastic press, the interval assumptions give separate fits for stiffness E and yield scale Y.')
-        return im
-    if name=='plan':
-        im=base('FORM · 03 / PLAN','Plan robot actions with the identified law','Freeze material parameters; optimize the robot motion in MPM.',elapsed)
-        for x in [44,455,866]: box(im,(x,178,x+370,595))
-        text(im,(69,201),'Identified model',28,BLUE,True)
-        text(im,(478,201),'Motion optimization',28,TEAL,True)
-        text(im,(891,201),'Open-loop execution',27,INK,True)
-        text(im,(76,252),'Stiffness E · Yield scale Y',23,BLUE,True,width=310)
-        fit(im,still('target'),(75,296,306,130))
-        lines(im,(76,441),['Material law + task goal','Parameters stay fixed'],25,INK,step=48,width=310)
-        fit(im,still('shape_action'),(475,263,330,192))
-        lines(im,(481,477),['Simulate candidate motions','Select the best evaluated plan'],22,INK,step=35,width=332)
-        fit(im,frame('shape',t).crop((50,48,810,568)),(888,264,324,216))
-        text(im,(894,515),'Execute the frozen motion',23,INK,width=320)
-        arrow(im,(419,383),(447,383));arrow(im,(832,383),(858,383))
-        footer(im,'Simulation is used for planning, after identification.',
-                  'Deployment uses new actions or geometries; no online refitting or replanning.')
-        return im
+        return draw_method02(t)
     if name=='insertion':
-        im=base('Results · simulation','Elastic rod insertion','A bending probe identifies stiffness; the model transfers to a different geometry.',elapsed)
-        comparison(im,'insert',max(0,t-2))
-        side(im,'Matched ID',['Plan uses the model','of the executed material.'],BLUE)
-        side(im,'Swapped ID',['Plan uses the model','of the other material.'],ORANGE,y=324)
-        if t>=10.5:
-            side(im,'Both matched insert',['Both swaps collide','with the wall.'],TEAL,y=476)
-        footer(im,'Materials A and B: the same task, different identified elastic stiffnesses.',
-                  'Recorded simulation speed; final state held.')
+        im=Image.new('RGB',(W,H),BG)
+        d=ImageDraw.Draw(im)
+        prefix='Results · Simulation / '
+        text(im,(44,22),prefix,34,TEAL,True)
+        prefix_width=d.textlength(prefix,font=font(34,True))
+        text(im,(44+prefix_width,22),'Elastic rod insertion',34,INK,True)
+        text(im,(44,79),'Identify the material law from bending. Use it to insert the rod through the hole by controlling gripper height and tilt.',23,MUTED,width=1192)
+        d.line((44,119,1236,119),fill=LINE,width=2)
+        d.rectangle((0,716,W,719),fill=LINE)
+        d.rectangle((0,716,int(W*elapsed/TOTAL),719),fill=TEAL)
+        # Actual A then actual B loading, each physical interval 0.30–0.90 s
+        # shown in 1.6 s. Each estimate appears only after its observed bend.
+        probe,active_material=insertion_probe(t)
+        text(im,(44,137),'Identify material law',25,INK,True)
+        text(im,(44,172),'Same bending probe for A and B',22,MUTED)
+        fit(im,probe,(44,250,174,265))
+        if t<4:
+            text(im,(131,515),f'Material {active_material}',22,
+                 BLUE if active_material=='A' else ORANGE,True,anchor='mt')
+        text(im,(131,550),'Stereo motion',25,INK,True,anchor='mt')
+        text(im,(131,581),'+ force',25,INK,True,anchor='mt')
+        # Connect the actual observed bend to the fitted parameters rather
+        # than scattering inputs and outputs into disconnected text islands.
+        arrow(im,(203,428),(252,428),TEAL,3)
+        box(im,(260,238,495,604),fill=WHITE,radius=12,outline=LINE)
+        text(im,(377,257),'Identified',23,TEAL,True,anchor='mt')
+        text(im,(377,287),'material laws',23,TEAL,True,anchor='mt')
+        for material,value,y,color,start in [('A','80.6',352,BLUE,1.6),('B','248.1',403,ORANGE,3.6)]:
+            values=im.copy()
+            insertion_math(values,[(rf'\sigma_{material}=',INK),(value+r'\,\mathrm{kPa}',color),(r'\,T_\nu(F)',INK)],377,y)
+            im=Image.blend(im,values,max(0,min(1,(t-start)/.16)))
+        ImageDraw.Draw(im).line((278,428,477,428),fill=LINE,width=1)
+        text(im,(377,446),'Colored values:',22,'#000000',anchor='mt')
+        # Keep E in the same regular math face as the equation symbols, while
+        # all three explanatory labels share the same regular 22 px font.
+        prefix='identified stiffness '
+        prefix_width=ImageDraw.Draw(im).textlength(prefix,font=font(22))
+        symbol,depth=insertion_math_token('E',22,INK)
+        left=377-(prefix_width+symbol.width)/2
+        text(im,(left,495),prefix,22,'#000000',anchor='ls')
+        im.paste(symbol,(round(left+prefix_width),round(495-symbol.height+depth)),symbol)
+        insertion_math(im,[(r'T_\nu(F)',INK)],377,541,size=22,max_width=100)
+        text(im,(377,558),'Deformation response',22,'#000000',anchor='mt')
+
+        # Identification comes first; the two insertion columns appear together.
+        layer=im.copy()
+        arrow(layer,(495,428),(544,428),TEAL,3)
+        pic=frame('insert',max(0,t-4))
+        for col,label in enumerate(['Matched ID','Swapped ID']):
+            text(layer,(713+354*col,137),label,25,INK,True,anchor='mt')
+            text(layer,(713+354*col,169),['Plan with own material model','Plan with other material’s model'][col],21,MUTED,anchor='mt')
+        for row,material in enumerate('AB'):
+            text(layer,(523,312+229*row),material,25,BLUE if row==0 else ORANGE,True,anchor='mm')
+            for col in range(2):
+                rect=(56+784*col,56+540*row,816+784*col,576+540*row)
+                fit(layer,pic.crop(rect),(544+354*col,202+229*row,338,222))
+        opacity=max(0,min(1,(t-4)/.5))
+        opacity=.07+.93*opacity*opacity*(3-2*opacity)
+        im=Image.blend(im,layer,opacity)
         return im
     if name=='golf':
-        im=base('Results · simulation','Putting with a flexible club','The same identified elastic models transfer to a second manipulation task.',elapsed)
-        # Play once at real simulation speed, then hold. No unmarked repeated trials.
-        comparison(im,'golf',max(0,t-1)*.5,(44,180,832,448))
-        side(im,'Plan the forward stroke',['Duration and aim change;','backswing stays prescribed.'],BLUE)
-        side(im,'Matched ID',['Both balls stop','inside the target.'],TEAL,y=347)
-        if t>12: side(im,'Swapped ID',['Both balls miss','the target.'],ORANGE,y=496)
-        footer(im,'Club flexibility matters even with the same initial backswing.',
-                  '0.5× playback; final state held. A/B denote elastic materials in this experiment.')
+        im=Image.new('RGB',(W,H),BG)
+        d=ImageDraw.Draw(im)
+        prefix='Results · Simulation / '
+        text(im,(44,22),prefix,34,TEAL,True)
+        prefix_width=d.textlength(prefix,font=font(34,True))
+        text(im,(44+prefix_width,22),'Putting with a flexible club',34,INK,True)
+        text(im,(44,79),'Reuse the previously identified material laws. Plan forward-stroke duration and aim angle to stop the ball in the target.',23,MUTED,width=1192)
+        d.line((44,119,1236,119),fill=LINE,width=2)
+        d.rectangle((0,716,W,719),fill=LINE)
+        d.rectangle((0,716,int(W*elapsed/TOTAL),719),fill=TEAL)
+        # Three synchronized five-second loops: 4.5 s playback + 0.5 s final hold. The
+        # same fixed vertical crop removes sky/foreground from all four views;
+        # clubs, ball paths and targets share one uniform display scale.
+        if 'golf' not in CLIPS:
+            CLIPS['golf']=Clip(SOURCES['golf'])
+        clip=CLIPS['golf']
+        source_t=min((t % 5)/4.5,1)*(clip.n-1)/clip.fps
+        pic=clip.get(source_t)
+        for col,label in enumerate(['Matched ID','Swapped ID']):
+            text(im,(368+584*col,137),label,25,INK,True,anchor='mt')
+            text(im,(368+584*col,169),['Plan with own material model','Plan with other material’s model'][col],21,MUTED,anchor='mt')
+        for row,material in enumerate('AB'):
+            text(im,(53,311+230*row),material,25,BLUE if row==0 else ORANGE,True,anchor='mm')
+            for col in range(2):
+                rect=(34+790*col,113+466*row,818+790*col,425+466*row)
+                fit(im,pic.crop(rect),(84+584*col,198+230*row,568,226))
         return im
     if name=='simshape':
-        im=base('Results · simulation','Plan plastic shaping','A flat-plate press identifies a model for shaping a larger block.',elapsed)
-        comparison(im,'shape',t*1.25)
-        side(im,'Hencky / von Mises',['Similar fitted stiffness;','different yield scales.'],BLUE)
-        fit(im,still('sim_target'),(984,319,146,166))
-        text(im,(980,490),'Target shape',23,MUTED,True)
-        if t>=18.5:
-            lines(im,(912,522),['Surface error (mm)','A: 0.883 / 1.226','B: 1.256 / 1.739'],23,INK,step=31,width=320)
-        footer(im,'Six planned pinches; compare matched and swapped models on the same material.',
-                  '1.25× playback. Plastic A/B; errors: matched / swapped, symmetric area-weighted surface distance.')
-        return im
-    if name=='pressing':
-        im=base('Results · hardware','From real pressing to a predictive model','Models identified from separate presses are evaluated with a lower applied force.',elapsed)
-        # Source strips contain material labels; replace only their label band at larger size.
-        for j,label in enumerate(['Red Play-Doh','Yellow butter slime','Gray plasticine']):
-            text(im,(252+j*371,164),label,25,INK,True,anchor='mt')
-        text(im,(44,253),'Real',22,INK,True)
-        text(im,(44,466),'MPM',22,INK,True)
-        fit(im,frame('real',t).crop((0,50,1820,410)),(120,206,1114,211))
-        fit(im,frame('sim',t).crop((0,50,1820,410)),(120,427,1114,211))
-        footer(im,'Prediction discrepancies remain, especially in the soft materials’ spreading and recovery.',
-                  '1× playback; common force-baseline reference. Simulation views are mirrored for display.')
+        im=Image.new('RGB',(W,H),BG)
+        d=ImageDraw.Draw(im)
+        prefix='Results · Simulation / '
+        text(im,(44,22),prefix,34,TEAL,True)
+        text(im,(44+d.textlength(prefix,font=font(34,True)),22),'Plastic shaping',34,INK,True)
+        text(im,(44,79),'Identify stiffness and yield stress from pressing. Plan six pinches to shape a larger block into an X.',23,MUTED,width=1192)
+        d.line((44,119,1236,119),fill=LINE,width=2)
+        d.rectangle((0,716,W,719),fill=LINE)
+        d.rectangle((0,716,int(W*elapsed/TOTAL),719),fill=TEAL)
+        frames,laws,errors=shaping_identification()
+        material='A' if t<2 else 'B'
+        source_t=min(2,t if t<2 else t-2)
+        index=min(50,round(source_t/.04))
+        text(im,(44,137),'Identify material laws',25,INK,True)
+        if t<4:text(im,(404,137),material,25,BLUE if material=='A' else ORANGE,True,anchor='rt')
+        rgb=frames[material][index].astype(float)
+        color=np.array([35,117,170] if material=='A' else [201,105,50])
+        tint=np.clip(rgb.mean(2)[...,None]/185*color,0,255)
+        amount=1-max(0,min(1,(t-4)/.25))
+        alpha=frames[material+'_mask'][index][...,None]/255*amount
+        rgb=rgb*(1-alpha)+tint*alpha
+        fit(im,Image.fromarray(np.rint(rgb).astype('uint8')),(44,174,496,208))
+        arrow(im,(292,384),(292,405),TEAL,3)
+        im=shaping_law_graph(im,laws,t)
+        layer=im.copy()
+        arrow(layer,(545,411),(640,411),TEAL,3)
+        for col,label in enumerate(['Matched ID','Swapped ID']):
+            text(layer,(799+280*col,137),label,25,INK,True,anchor='mt')
+        for row,m in enumerate('AB'):
+            for col,model in enumerate([m,'B' if m=='A' else 'A']):
+                key=f'shaping_hand_{m}_{model}'
+                if key not in SOURCES:SOURCES[key]=ASSETS/'shaping_hand'/f'{m}_plan_{model}.mp4'
+                pic=frame(key,max(0,min(15.96,t-4)))
+                fit(layer,pic.crop((64,0,576,440)),(678+280*col,178+246*row,242,208))
+                if t>=20:
+                    prefix='Surface error: '
+                    value=f"{errors[m,model]:.3f} mm"
+                    ld=ImageDraw.Draw(layer)
+                    prefix_width=ld.textlength(prefix,font=font(21))
+                    label_width=prefix_width+ld.textlength(value,font=font(21,True))
+                    assert label_width<=242
+                    left=799+280*col-label_width/2
+                    y=407+246*row
+                    text(layer,(left,y),prefix,21,'#000000',anchor='ls')
+                    text(layer,(left+prefix_width,y),value,21,INK,True,anchor='ls')
+            text(layer,(656,280+246*row),m,25,BLUE if m=='A' else ORANGE,True,anchor='mm')
+        opacity=max(0,min(1,(t-4)/.5))
+        opacity=.07+.93*opacity*opacity*(3-2*opacity)
+        im=Image.blend(im,layer,opacity)
         return im
     if name=='hardware':
-        im=base('Results · hardware','Execute the planned pinches','The identified model is held fixed while planning four pinches on a fresh specimen.',elapsed)
-        conf=HERE/'hardware_clip.json'
-        if conf.exists():
-            spec=json.loads(conf.read_text());SOURCES['hardware']=Path(spec['path'])
-            pic=frame('hardware',spec.get('start',0)+t*spec.get('speed',1))
-            if spec.get('crop'): pic=pic.crop(tuple(spec['crop']))
-            if spec.get('rotate'): pic=pic.rotate(spec['rotate'],expand=True)
-            fit(im,pic,(44,164,835,465))
-            side(im,'Plan, then execute',['Finger motions are','specified in advance.'],BLUE)
-            side(im,'No online correction',['No material refitting','during execution.'],TEAL,y=386)
-            footer(im,spec['caption'],spec['qualification'])
-        else:
-            fit(im,still('butter_slime'),(80,193,700,400))
-            side(im,'Footage pending',['Hardware execution clip','has not been supplied yet.'],ORANGE)
-            footer(im,'Assembly placeholder, not for submission.','Replace with the supplied hardware execution recording.')
-        return im
-    if name=='scans':
-        im=base('Results · hardware','Evaluate the final hardware shapes','Intersection over union of the reconstructed XY footprint and the target.',elapsed)
-        for j,(key,label,val) in enumerate([('play_doh','Red Play-Doh','75.7%'),('butter_slime','Yellow butter slime','72.4%'),('plasticine','Gray plasticine','77.8%')]):
-            x=44+j*403
-            text(im,(x+192,180),label,26,INK,True,anchor='mt')
-            fit(im,still(key),(x,228,385,317))
-            text(im,(x+192,566),'IoU '+val,32,TEAL,True,anchor='mt')
-        footer(im,'One scan per material; translation and rotation aligned to the target, without scaling.',
-                  'Photo-textured reconstructions; missing surfaces interpolated. Release-to-scan delay was not recorded.')
-        return im
+        import hardware_slide
+        return hardware_slide.draw(sys.modules[__name__],t,elapsed)
     if name=='pouring':
-        im=base('Results · hardware + simulation','Identify from one glycerol pour','A reduced, time-integrated weak balance estimates effective viscosity.',elapsed)
-        fit(im,frame('pour',t),(44,161,825,473))
-        side(im,'One 60° pour',['Effective viscosity','3.44 Pa·s'],BLUE)
-        side(im,'Contact calibration',['Same pour; viscosity fixed.','Effective coefficient: 0.272'],TEAL,y=365)
-        footer(im,'This is the identification / calibration recording.',
-                  '1× playback. Receiver volume, cup motion, and geometry supply the reduced model; blue liquid is simulated.')
-        return im
-    if name=='volumes':
-        im=base('Results · hardware','Plan for new target volumes','Freeze viscosity and contact, then optimize the pouring angle for each target.',elapsed)
-        fit(im,still('volumes'),(34,163,852,470))
-        text(im,(923,205),'60–160 mL',37,BLUE,True)
-        text(im,(923,253),'Six target volumes',25,INK)
-        text(im,(923,334),'3.8 mL',41,TEAL,True)
-        lines(im,(923,395),['Largest absolute','mean target error','for glycerol'],25,INK,step=34,width=303)
-        footer(im,'Glycerol: five trials, mean ± SD. Water: the same commands, one trial per target.',
-                  'Volumes read from receiver photographs; cup accuracy and camera parallax remain uncalibrated.')
-        return im
+        import pouring_slide
+        return pouring_slide.draw(sys.modules[__name__],t,elapsed)
     if name=='takeaway':
         im=Image.new('RGB',(W,H),BG)
         text(im,(48,43),'FORM',24,TEAL,True)
@@ -330,7 +451,20 @@ def draw_section(name,t):
         return im
     raise ValueError(name)
 
+def draw_section(name,t):
+    im=draw_section_content(name,t)
+    if name not in ('opening','observe','balance'):
+        paint_caption(im,caption_at(name,t))
+    return im
+
 def render(name):
+    if name=='insertion' and not (ASSETS/'insertion_probe.npz').exists():
+        subprocess.run([sys.executable,str(HERE/'prepare_insertion_probe.py')],check=True)
+    if name in ('observe','balance'):
+        subfolder,script,output=(('method01_preview','render_method01.py','method01_animated.mp4') if name=='observe' else ('method02_preview','render_method02_animated.py','method02_block1_animated.mp4'))
+        subprocess.run([sys.executable,str(HERE/subfolder/script),'--render'],check=True)
+        shutil.copy2(HERE/subfolder/output,SECTIONS/f'{name}.mp4')
+        return
     if name == 'opening':
         subprocess.run([sys.executable, str(HERE/'opening_preview/make_preview.py')], check=True)
         approved_frame.cache_clear()
@@ -358,18 +492,37 @@ def preview():
 
 def assemble():
     assert (HERE/'hardware_clip.json').exists(),'Hardware footage is still missing; do not publish a placeholder.'
+    # Validate every installed section, including the latest reviewed methods.
+    for name,duration,_ in TIMELINE:
+        cap=cv2.VideoCapture(str(SECTIONS/f'{name}.mp4'))
+        assert cap.get(cv2.CAP_PROP_FRAME_COUNT)==duration*FPS,(name,duration)
+        cap.release()
+    export_captions(HERE,ALL_SECTIONS,'ICRA2027_video')
     listing=HERE/'sections.txt';listing.write_text(''.join(f"file 'sections/{n}.mp4'\n" for n,_,_ in TIMELINE))
+    joined=HERE/'assembly_concat.mp4'
     subprocess.run(['ffmpeg','-y','-v','error','-f','concat','-safe','0','-i',str(listing),'-c','copy','-map_metadata','-1',
-                    '-movflags','+faststart',str(HERE/'ICRA2027_video_master.mp4')],check=True)
+                    '-movflags','+faststart',str(joined)],check=True)
     master=HERE/'ICRA2027_video_master.mp4'
+    # Cached sections can have been rendered before a timing revision. Repaint
+    # only the four-pixel global progress bar against the assembled timeline.
+    filters=(f'[0:v]drawbox=x=0:y=716:w=iw:h=4:color=0xd9e1e5:t=fill[base];'
+             f'[base][1:v]overlay=x=-w+W*t/{TOTAL}:y=716:shortest=1[out]')
+    subprocess.run(['ffmpeg','-y','-v','error','-i',str(joined),'-f','lavfi','-i',
+                    f'color=c=0x167b76:s=1280x4:r={FPS}:d={TOTAL}',
+                    '-filter_complex_threads','2','-filter_complex',filters,'-map','[out]',
+                    '-an','-c:v','libx264','-crf','17','-preset','fast','-threads','6',
+                    '-pix_fmt','yuv420p','-map_metadata','-1','-movflags','+faststart',str(master)],check=True)
+    joined.unlink()
     if master.stat().st_size<19_500_000:
         shutil.copy2(master,HERE/'ICRA2027_video.mp4')
         print('Master already fits the submission limit; copied without another encoding generation.',flush=True)
         return
-    # 825 kbit/s leaves margin beneath a decimal 20 MB limit for up to 180 seconds, with no audio.
+    # Working cuts can exceed three minutes; derive the compact-copy bitrate
+    # from actual duration while retaining the original high-quality master.
+    bitrate=min(825_000,int(19_000_000*8/TOTAL))
     for p in [1,2]:
         cmd=['ffmpeg','-y','-v','error','-i',str(HERE/'ICRA2027_video_master.mp4'),'-an','-c:v','libx264','-preset','slow',
-             '-b:v','825k','-threads','6','-pix_fmt','yuv420p','-pass',str(p),'-passlogfile',str(HERE/'encode_pass'),'-map_metadata','-1']
+             '-b:v',str(bitrate),'-threads','6','-pix_fmt','yuv420p','-pass',str(p),'-passlogfile',str(HERE/'encode_pass'),'-map_metadata','-1']
         cmd+=['-f','null','/dev/null'] if p==1 else ['-movflags','+faststart',str(HERE/'ICRA2027_video.mp4')]
         subprocess.run(cmd,check=True)
     out=HERE/'ICRA2027_video.mp4'
