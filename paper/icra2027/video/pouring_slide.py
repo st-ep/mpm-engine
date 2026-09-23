@@ -8,13 +8,16 @@ import csv, json, math, hashlib
 import numpy as np
 from PIL import Image, ImageDraw
 
-DURATION=36
-IDENTIFY=4.0
-PLAN_START=12.0
+DURATION=26
+IDENTIFY=2.0
+PLAN_START=6.0
+LOWER_PLAYBACK_RATE=1.2
+# Lower-sequence event times use its original clock; draw() maps playback time
+# once so clips, arrows, selected angles, cups, and graph points accelerate together.
 CYCLE=3.0
 TRANSFER=2.0
 ARRIVAL=2.5
-WATER_START=31.0
+WATER_START=25.0
 GLYCEROL='#c96932'
 WATER='#2375aa'
 CUP_CROP=(500,1840,5290,2840)
@@ -177,8 +180,10 @@ def draw(b,t,elapsed):
     b.text(im,(44,79),'Identify from one glycerol pour. Reuse the model to plan the tilt for each target volume.',23,b.MUTED,width=1192)
     d.line((44,119,1236,119),fill=b.LINE,width=2)
     b.box(im,(34,128,1246,369),b.BG,12,b.LINE)
-    # A complete synchronized recorded-motion replay, then hold its final state.
-    source=b.frame('pour',min(t,386/30-1/30))
+    # Fit the complete synchronized replay into the six-second introduction,
+    # then hold its final state while the unchanged planning sequence runs.
+    replay_end=386/30-1/30
+    source=b.frame('pour',min(t/PLAN_START,1.)*replay_end)
     b.text(im,(209,135),'Recorded pour · 60°',23,b.INK,True,anchor='mt')
     video_panel(b,im,source)
     layer=im.copy();identification(b,layer)
@@ -188,6 +193,8 @@ def draw(b,t,elapsed):
     b.arrow(layer,(324,260),(446,260),b.TEAL,3)
     b.arrow(layer,(834,260),(956,260),b.TEAL,3)
     im=Image.blend(im,layer,reveal(t,IDENTIFY))
+    if t>=PLAN_START:
+        t=PLAN_START+(t-PLAN_START)*LOWER_PLAYBACK_RATE
     layer=im.copy()
     for bounds in [(34,405,320,661),(384,405,832,661),(896,405,1246,661)]:
         b.box(layer,bounds,b.BG,12,b.LINE)

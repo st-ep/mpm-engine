@@ -6,7 +6,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from opening_preview.render_opening import REVEALS, FADE_SECONDS
 from build_video import HERE,ROOT,REVIEW,TIMELINE,SOURCES,FPS,TOTAL,draw_section,TEXT_LOG
-from narrative_captions import ALL_SECTIONS,CUES,caption_at
+from narrative_captions import ALL_SECTIONS,CUES,caption_at,OPENING_CAPTION_RATE_LIMITS,INSERTION_CAPTION_RATE_LIMITS
+from takeaway_preview.render_takeaway import CAPTION_RATE_LIMITS
 
 def sha(p):
     h=hashlib.sha256()
@@ -71,7 +72,12 @@ for name,duration in ALL_SECTIONS:
     end_previous=0
     for cue_start,cue_end,caption in CUES[name]:
         assert cue_start==end_previous and cue_end>cue_start
-        assert len(caption)/(cue_end-cue_start)<=20
+        # Preserve approved transfer and identified-law wording in their existing
+        # cues; all other captions retain the 20 chars/s limit.
+        rate_limit=CAPTION_RATE_LIMITS.get(cue_start,20) if name=='takeaway' else 20
+        if name=='opening':rate_limit=OPENING_CAPTION_RATE_LIMITS.get(cue_start,20)
+        if name=='insertion':rate_limit=INSERTION_CAPTION_RATE_LIMITS.get(cue_start,20)
+        assert len(caption)/(cue_end-cue_start)<=rate_limit
         end_previous=cue_end
         when=caption_clock+(cue_start+cue_end)/2
         caption_cap.set(cv2.CAP_PROP_POS_MSEC,when*1000);ok,bgr=caption_cap.read();assert ok
@@ -80,7 +86,8 @@ for name,duration in ALL_SECTIONS:
         for row in [668,707]:
             assert np.abs(rgb[row,600:680].astype(float)-[38,53,62]).mean()<10,(name,when,row)
         Image.fromarray(rgb).save(actual/f'caption_{name}_{cue_start:g}.png')
-        caption_review.append({'section':name,'start_s':caption_clock+cue_start,'end_s':caption_clock+cue_end,'text':caption})
+        caption_review.append({'section':name,'start_s':caption_clock+cue_start,'end_s':caption_clock+cue_end,'text':caption,
+                               'characters_per_second':len(caption)/(cue_end-cue_start),'rate_limit_cps':rate_limit})
     assert end_previous==duration
     caption_clock+=duration
 caption_cap.release()
@@ -130,6 +137,7 @@ source_paths=[HERE/'hardware_slide.py',HERE/'prepare_hardware_slide.py',
  HERE/'method02_preview/method02_block1_animation_provenance.json',
  HERE/'method02_preview/shaping_pair/pair_provenance.json',
  HERE/'method_slide_frame.py',HERE/'narrative_captions.py',
+ HERE/'takeaway_preview/render_takeaway.py',HERE/'takeaway_preview/layout_review.json',
  HERE/'pouring_slide.py',HERE/'assets/pouring_storyboard_provenance.json',
  ROOT/'pouring_real_data/pouring_figs/all_6_levels.jpg',
  ROOT/'pouring_real_data/pouring_figs/group_photo_mapping.csv',
@@ -169,6 +177,7 @@ prov={'scope':'Private video edit. Frozen target-pour physics plans are replayed
  'editing':{'source_geometry':'Measured source imagery is unchanged apart from documented crops/resizing. Method 1 shows synchronized surface envelopes of saved inferred particles and a schematic triangulation diagram with actual two-camera texture crops; source kinematics are unchanged.',
   'method01':json.loads((HERE/'method01_preview/animation_provenance.json').read_text()),
   'method02':json.loads((HERE/'method02_preview/method02_block1_animation_provenance.json').read_text()),
+  'takeaway':json.loads((HERE/'takeaway_preview/layout_review.json').read_text()),
   'pouring_combined':json.loads((HERE/'assets/pouring_storyboard_provenance.json').read_text()),
   'hardware_combined':{'duration_s':30,'replaces':['pressing 16 s','hardware 14 s','scans 10 s'],
       'layout':'Three columns of materials on the left, three rows: recorded press, MPM press, final scans. Identified-law graph top right, real four-pinch execution bottom right. Press-to-law arrow starts at actual video right edge x737 and meets law card at x812. Straight return arrow y365 exits just above the rounded card corner and meets MPM at x737. Execution bottom y652 matches score-text bounding-box bottoms exactly.',

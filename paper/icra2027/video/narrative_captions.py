@@ -5,18 +5,24 @@ No synthesized narration track is generated.
 """
 from functools import lru_cache
 from PIL import ImageDraw, ImageFont
+from takeaway_preview.render_takeaway import CAPTION_CUES as TAKEAWAY_CUES, DURATION as TAKEAWAY_DURATION
+
+# Preserve the approved explicit geometry-transfer sentence in its existing cue.
+OPENING_CAPTION_RATE_LIMITS = {10: 22}
+# Preserve the approved identified-law comparison in its four-second cue (20.75 cps).
+INSERTION_CAPTION_RATE_LIMITS = {8: 21}
 
 SECTIONS=[('opening',13),('observe',32),('balance',28)]
 ALL_SECTIONS=SECTIONS+[
-    ('insertion',15),('golf',15),('simshape',23),
-    ('hardware',30),('pouring',36),('takeaway',10),
+    ('insertion',12),('golf',10),('simshape',15),
+    ('hardware',30),('pouring',26),('takeaway',TAKEAWAY_DURATION),
 ]
 CUES={
     'opening':[
-        (0,3,'The same action can produce very different outcomes.'),
-        (3,6,'We start by observing one interaction.'),
-        (6,10,'FORM identifies a material law from motion and contact forces.'),
-        (10,13,'Then we use that law to plan new actions.'),
+        (0,3,'Different materials respond differently to the same action.'),
+        (3,6,'We observe how the material moves during one interaction.'),
+        (6,10,'Our method, FORM, identifies a material law.'),
+        (10,13,'We use the identified law to plan new actions for new geometries.'),
     ],
     'observe':[
         (0,4,'First, we record the material as it deforms.'),
@@ -25,62 +31,48 @@ CUES={
         (12,16,'We infer the flow inside from the surface motion, assuming no slip at contacts.'),
         (16,20,'Then we follow particles through this flow to recover their 3D paths.'),
         (20,24,'With stereo, we track the same texture in two views to recover surface motion.'),
-        (24,28,'We fit a smooth model to these tracks to estimate how the interior moves.'),
+        (24,28,'From the surface motion, we estimate how the interior moves.'),
         (28,32,'The motion and measured contact forces then go into material identification.'),
     ],
     'balance':[
         (0,4,'Which material law explains the motion we just observed?'),
         (4,8,'We weight Newton’s law and integrate over space and time.'),
-        (8,12,'The resulting weak balance links stress to motion and contact forces.'),
+        (8,12,'Our test fields cancel the pressure term, leaving only deviatoric stress.'),
         (12,16,'We express stress using known responses and unknown coefficients.'),
-        (16,20,'Then we recover those coefficients with linear least squares.'),
+        (16,20,'Linear least squares gives us the coefficients of the material law.'),
         (20,24,'Keeping the law fixed, we plan new robot actions in simulation.'),
         (24,28,'Finally, we execute that plan on the real material.'),
     ],
     'insertion':[
         (0,4,'From bending and force, we identify each material’s stiffness.'),
         (4,8,'Our task is rod insertion: a new action and geometry.'),
-        (8,12,'Matched ID uses the rod’s own model; swapped ID uses the other material’s.'),
-        (12,15,'Matched plans insert; swapped plans hit the wall.'),
+        (8,12,'Matched ID uses the rod’s identified law; swapped ID uses the other material’s law.'),
     ],
     'golf':[
-        (0,4,'We reuse the material laws identified from bending to plan putting.'),
-        (4,7.5,'Our goal is to stop the ball inside the target.'),
-        (7.5,12.8,'We plan forward-stroke duration and aim angle, keeping the backswing fixed.'),
-        (12.8,15,'Matched plans succeed; swapped plans miss.'),
+        (0,3,'We reuse the material laws identified from bending.'),
+        (3,7,'We plan forward-stroke duration and aim angle to stop the ball on target.'),
+        (7,10,'Matched plans succeed; swapped plans miss.'),
     ],
     'simshape':[
         (0,4,'From pressing, we identify stiffness and yield stress for each material.'),
-        (4,8,'The stiffnesses are similar, but the yield stresses differ roughly tenfold.'),
-        (8,12,'Our task is to shape a larger block into an X with six planned pinches.'),
-        (12,16,'We plan the pinch openings and a shared lateral offset.'),
-        (16,20,'The identified material law stays fixed throughout planning.'),
-        (20,23,'Both matched plans give lower surface error.'),
+        (4,12,'Keeping those laws fixed, we plan six pinches to shape a larger block into an X.'),
+        (12,15,'Both matched plans give lower surface error.'),
     ],
     'hardware':[
         (0,6,'For each material, one press identifies stiffness and yield stress.'),
-        (6,9,'We use those laws to predict a separate, lower-force press.'),
-        (9,12,'The models capture compression, but spreading differs.'),
+        (6,12,'We use those laws to predict a separate, lower-force press.'),
         (12,16,'Next, we plan four pinches to shape fresh specimens into an X.'),
-        (16,21,'Here, the robot executes the Play-Doh plan without online correction.'),
+        (16,21,'Here, the robot executes the plan on a fresh Play-Doh specimen.'),
         (21,26,'The identified laws stay fixed throughout planning and execution.'),
         (26,30,'After rigid alignment, footprint overlap is 72 to 78 percent.'),
     ],
     'pouring':[
-        (0,4,'We begin with one 60-degree glycerol pour.'),
-        (4,8,'A reduced weak balance identifies an effective viscosity of 3.44 pascal-seconds.'),
-        (8,12,'The identified viscosity stays fixed as we plan new target volumes.'),
-        (12,16,'For each target volume, MPM selects the cup’s tilt angle.'),
-        (16,20,'We send that angle to the robot and repeat the pour five times.'),
-        (20,23,'These cups show one of the five trials.'),
-        (23,27,'Points show the mean and standard deviation across all five trials.'),
-        (27,31,'Across all six targets, the largest mean error is 3.8 milliliters.'),
-        (31,36,'Water uses the same commands, with one trial per target, and overpours.'),
+        (0,6,'We identify an effective viscosity from a single glycerol pour.'),
+        (6,14,'We keep it fixed and plan the cup’s tilt for each of six target volumes.'),
+        (14,21+5/6,'Across all six targets, the largest mean error is 3.8 milliliters.'),
+        (21+5/6,26,'Water overpours when we use the same commands planned for glycerol.'),
     ],
-    'takeaway':[
-        (0,5,'FORM turns an observed interaction into an explicit material law.'),
-        (5,10,'That same law guides new robot actions, without refitting for each task.'),
-    ],
+    'takeaway':TAKEAWAY_CUES,
 }
 
 

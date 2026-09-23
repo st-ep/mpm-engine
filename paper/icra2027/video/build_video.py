@@ -10,6 +10,7 @@ from opening_preview.render_opening import draw_opening, DURATION as OPENING_DUR
 from method01_preview.render_method01 import draw_method01, DURATION as OBSERVE_DURATION
 sys.path.insert(0,str(Path(__file__).resolve().parent/'method02_preview'))
 from render_method02_animated import draw_frame as draw_method02, DURATION as IDENTIFY_PLAN_DURATION
+from takeaway_preview.render_takeaway import draw_frame as draw_takeaway, DURATION as TAKEAWAY_DURATION
 from narrative_captions import ALL_SECTIONS,CUES,caption_at,paint_caption,export_captions
 import cv2
 import numpy as np
@@ -33,12 +34,12 @@ TIMELINE = [
  ('opening',OPENING_DURATION,'Identify material laws. Plan robot actions.'),
  ('observe',OBSERVE_DURATION,'Observe one interaction'),
  ('balance',IDENTIFY_PLAN_DURATION,'Identify the material law and plan robot actions'),
- ('insertion',15,'Elastic rod insertion'),
- ('golf',15,'Putting with a flexible club'),
- ('simshape',23,'Plan plastic shaping'),
+ ('insertion',12,'Elastic rod insertion'),
+ ('golf',10,'Putting with a flexible club'),
+ ('simshape',15,'Plan plastic shaping'),
  ('hardware',30,'Hardware pressing and shaping'),
- ('pouring',36,'Identify and plan target-volume pouring'),
- ('takeaway',10,'From an interaction to a reusable material model'),
+ ('pouring',26,'Identify and plan target-volume pouring'),
+ ('takeaway',TAKEAWAY_DURATION,'From one interaction to new robot actions'),
 ]
 TOTAL = sum(d for _,d,_ in TIMELINE)
 assert [(name,duration) for name,duration,_ in TIMELINE]==ALL_SECTIONS
@@ -363,7 +364,7 @@ def draw_section_content(name,t):
         d.line((44,119,1236,119),fill=LINE,width=2)
         d.rectangle((0,716,W,719),fill=LINE)
         d.rectangle((0,716,int(W*elapsed/TOTAL),719),fill=TEAL)
-        # Three synchronized five-second loops: 4.5 s playback + 0.5 s final hold. The
+        # Two synchronized five-second loops: 4.5 s playback + 0.5 s final hold. The
         # same fixed vertical crop removes sky/foreground from all four views;
         # clubs, ball paths and targets share one uniform display scale.
         if 'golf' not in CLIPS:
@@ -413,9 +414,11 @@ def draw_section_content(name,t):
             for col,model in enumerate([m,'B' if m=='A' else 'A']):
                 key=f'shaping_hand_{m}_{model}'
                 if key not in SOURCES:SOURCES[key]=ASSETS/'shaping_hand'/f'{m}_plan_{model}.mp4'
-                pic=frame(key,max(0,min(15.96,t-4)))
+                # Preserve the 4 s identification and 3 s final comparison;
+                # play the complete 16 s shaping replay in 8 s.
+                pic=frame(key,max(0,min(15.96,2*(t-4))))
                 fit(layer,pic.crop((64,0,576,440)),(678+280*col,178+246*row,242,208))
-                if t>=20:
+                if t>=12:
                     prefix='Surface error: '
                     value=f"{errors[m,model]:.3f} mm"
                     ld=ImageDraw.Draw(layer)
@@ -438,22 +441,12 @@ def draw_section_content(name,t):
         import pouring_slide
         return pouring_slide.draw(sys.modules[__name__],t,elapsed)
     if name=='takeaway':
-        im=Image.new('RGB',(W,H),BG)
-        text(im,(48,43),'FORM',24,TEAL,True)
-        lines(im,(48,101),['An interaction provides a material model.','That model guides a new manipulation task.'],39,INK,True,step=55,width=1190)
-        items=[('Observe',BLUE),('Identify',TEAL),('Plan',BLUE),('Execute',TEAL)]
-        for j,(label,col) in enumerate(items):
-            x=48+j*309;box(im,(x,282,x+263,384),WHITE,outline=LINE)
-            text(im,(x+132,312),label,32,col,True,anchor='mt')
-            if j<3: arrow(im,(x+273,333),(x+298,333),TEAL)
-        lines(im,(48,447),['No repeated trial simulations during identification.','Simulation-based planning with the recovered model.'],28,INK,step=48,width=1185)
-        text(im,(48,602),'Demonstrated in elastic manipulation, plastic shaping, and pouring.',26,MUTED,width=1185)
-        return im
+        return draw_takeaway(t)
     raise ValueError(name)
 
 def draw_section(name,t):
     im=draw_section_content(name,t)
-    if name not in ('opening','observe','balance'):
+    if name not in ('opening','observe','balance','takeaway'):
         paint_caption(im,caption_at(name,t))
     return im
 
