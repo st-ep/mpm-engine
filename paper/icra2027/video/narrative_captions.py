@@ -6,7 +6,7 @@ No synthesized narration track is generated.
 from functools import lru_cache
 from PIL import ImageDraw, ImageFont
 
-SECTIONS=[('opening',13),('observe',24),('balance',28)]
+SECTIONS=[('opening',13),('observe',32),('balance',28)]
 ALL_SECTIONS=SECTIONS+[
     ('insertion',15),('golf',15),('simshape',23),
     ('hardware',30),('pouring',36),('takeaway',10),
@@ -20,11 +20,13 @@ CUES={
     ],
     'observe':[
         (0,4,'First, we record the material as it deforms.'),
-        (4,8,'For RGB-D, we reconstruct the 3D shape, assuming symmetry.'),
-        (8,12,'A volume-preserving flow model then moves particles through its interior.'),
-        (12,16,'Stereo matches texture across two views to recover 3D surface motion.'),
-        (16,20,'We fit a smooth motion model to infer how the interior moves.'),
-        (20,24,'Finally, we combine the inferred motion with measured contact forces.'),
+        (4,8,'RGB-D silhouettes give a 3D surface, assuming symmetry around the press axis.'),
+        (8,12,'We assume constant volume: pressing down makes the material spread sideways.'),
+        (12,16,'We infer internal velocities that follow the surface, with no slip at contacts.'),
+        (16,20,'We move each particle with the local velocity to reconstruct its 3D path.'),
+        (20,24,'Stereo matches texture across two views to recover 3D surface motion.'),
+        (24,28,'We fit a smooth motion model to infer how the interior moves.'),
+        (28,32,'Finally, we combine the inferred motion with measured contact forces.'),
     ],
     'balance':[
         (0,4,'Which material law explains the motion we just observed?'),
