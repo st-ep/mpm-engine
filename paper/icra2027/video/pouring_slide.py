@@ -4,7 +4,7 @@ prepare_pouring_targets.py captures the frozen physics replays separately. This
 editor only composes those clips, their unchanged commands, and measured data.
 """
 from functools import lru_cache
-import csv, json, math
+import csv, json, math, hashlib
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -17,6 +17,38 @@ ARRIVAL=2.5
 WATER_START=31.0
 GLYCEROL='#c96932'
 WATER='#2375aa'
+CUP_CROP=(500,1840,5290,2840)
+CUP_BOUNDARIES=(500,1440,2140,2820,3590,4350,5290)
+
+
+@lru_cache(None)
+def cup_photos(root):
+    folder=root/'pouring_real_data/pouring_figs'
+    photo=folder/'all_6_levels.jpg'
+    mapping=folder/'group_photo_mapping.csv'
+    provenance=json.loads((folder/'group_photo_provenance.json').read_text())
+    assert hashlib.sha256(photo.read_bytes()).hexdigest()==provenance['group_photo_sha256']
+    assert hashlib.sha256(mapping.read_bytes()).hexdigest()==provenance['mapping_csv_sha256']
+    rows=list(csv.DictReader(mapping.open()))
+    assert [int(r['target_ml']) for r in rows]==[60,80,100,120,140,160]
+    assert all(int(r['seed'])==2 for r in rows)
+    photo=Image.open(photo).convert('RGB').crop(CUP_CROP)
+    return photo.resize((424,round(424*photo.height/photo.width)),Image.Resampling.LANCZOS),rows
+
+
+def draw_cups(b,im,t):
+    # Preserve the paper photo's common scale and perspective. These are the
+    # six target cups from repeat 2, not six repeats or the plotted means.
+    photo,rows=cup_photos(b.ROOT)
+    x,y=396,533
+    scale=photo.width/(CUP_CROP[2]-CUP_CROP[0])
+    for i,row in enumerate(rows):
+        left=round((CUP_BOUNDARIES[i]-CUP_CROP[0])*scale)
+        right=round((CUP_BOUNDARIES[i+1]-CUP_CROP[0])*scale)
+        tile=photo.crop((left,0,right,photo.height))
+        background=Image.new('RGB',tile.size,b.BG)
+        alpha=.06+.94*smooth((t-(PLAN_START+i*CYCLE+ARRIVAL))/.35)
+        im.paste(Image.blend(background,tile,alpha),(x+left,y))
 
 
 def smooth(x):
@@ -100,24 +132,24 @@ def identification(b,im):
 
 
 def results_plot(b,im,t,records):
-    d=ImageDraw.Draw(im);x0,x1,y0,y1=850,1226,610,445
+    d=ImageDraw.Draw(im);x0,x1,y0,y1=937,1226,610,445
     # Same limits as the paper: the corner is (50, 50), not the first tick.
     def xy(x,y):return (x0+(x-50)/120*(x1-x0),y0-(y-50)/140*(y0-y1))
-    b.text(im,(1040,413),'Measured volume (mL)',24,b.INK,True,anchor='mt')
+    b.text(im,(1071,413),'Measured volume (mL)',24,b.INK,True,anchor='mt')
     for y in [60,100,140,180]:
         py=xy(60,y)[1];d.line((x0,py,x1,py),fill=b.LINE,width=1)
-        b.text(im,(840,py),str(y),18,b.MUTED,anchor='rm')
+        b.text(im,(927,py),str(y),18,b.MUTED,anchor='rm')
     d.line((x0,y1,x0,y0,x1,y0),fill=b.MUTED,width=2)
     for r in records:
         b.text(im,(xy(r['target'],60)[0],617),str(int(r['target'])),18,b.MUTED,anchor='mt')
-    b.text(im,(1038,641),'Target volume (mL)',19,b.INK,anchor='mt')
+    b.text(im,(1082,641),'Target volume (mL)',19,b.INK,anchor='mt')
     # Identity is a reference, not an MPM result curve.
     a=np.array(xy(50,50));z=np.array(xy(170,170));length=np.linalg.norm(z-a)
     for s in np.arange(0,length,13):
         p=a+(z-a)*s/length;q=a+(z-a)*min(length,s+7)/length
         d.line([tuple(p),tuple(q)],fill='#9aa8b0',width=2)
-    d.ellipse((863,454,872,463),fill=GLYCEROL)
-    b.text(im,(879,448),'Glycerol (n = 5)',19,GLYCEROL)
+    d.ellipse((950,454,959,463),fill=GLYCEROL)
+    b.text(im,(966,448),'Glycerol · 5 trials',19,GLYCEROL)
     for i,r in enumerate(records):
         appear=PLAN_START+i*CYCLE+ARRIVAL
         if t<appear:continue
@@ -128,8 +160,8 @@ def results_plot(b,im,t,records):
         d.ellipse((x-rad,y-rad,x+rad,y+rad),fill=GLYCEROL,outline=b.WHITE,width=1)
     if t>=WATER_START:
         layer=im.copy();w=ImageDraw.Draw(layer)
-        w.polygon([(868,475),(862,486),(874,486)],fill=WATER)
-        b.text(layer,(879,471),'Water (n = 1)',19,WATER)
+        w.polygon([(955,475),(949,486),(961,486)],fill=WATER)
+        b.text(layer,(966,471),'Water · 1 trial',19,WATER)
         for r in records:
             x,y=xy(r['target'],r['water'])
             w.polygon([(x,y-6),(x-6,y+5),(x+6,y+5)],fill=WATER)
@@ -157,35 +189,34 @@ def draw(b,t,elapsed):
     b.arrow(layer,(834,260),(956,260),b.TEAL,3)
     im=Image.blend(im,layer,reveal(t,IDENTIFY))
     layer=im.copy()
-    for bounds in [(34,405,387,661),(468,405,708,661),(799,405,1246,661)]:
+    for bounds in [(34,405,320,661),(384,405,832,661),(896,405,1246,661)]:
         b.box(layer,bounds,b.BG,12,b.LINE)
     ld=ImageDraw.Draw(layer)
-    ld.line([(640,355),(640,384),(207,384)],fill=b.TEAL,width=3)
-    b.arrow(layer,(207,384),(207,405),b.TEAL,3)
-    b.text(layer,(207,413),'Plan with MPM',24,b.INK,True,anchor='mt')
-    b.text(layer,(588,413),'Hardware execution',24,b.INK,True,anchor='mt')
+    ld.line([(640,355),(640,384),(177,384)],fill=b.TEAL,width=3)
+    b.arrow(layer,(177,384),(177,405),b.TEAL,3)
+    b.text(layer,(177,413),'Plan with MPM',24,b.INK,True,anchor='mt')
+    b.text(layer,(608,413),'Hardware execution',24,b.INK,True,anchor='mt')
     index,phase=state(t);r=records[index]
     replay=planning_frame(b,index,min(1.96,phase))
-    b.fit(layer,replay,(48,454,325,176))
-    b.text(layer,(207,641),f'Target: {r["target"]:.0f} mL',22,b.INK,anchor='mt')
-    b.box(layer,(478,480,698,627),b.WHITE,12,b.LINE)
-    b.text(layer,(588,497),'Selected tilt',20,b.MUTED,anchor='mt')
+    b.fit(layer,replay,(48,454,258,176))
+    b.text(layer,(177,641),f'Target: {r["target"]:.0f} mL',22,b.INK,anchor='mt')
+    b.text(layer,(608,449),'Selected tilt',20,b.MUTED,anchor='mt')
     done=completed(t)
     if done:
-        b.text(layer,(588,532),f'{records[done-1]["angle"]:.2f}°',34,b.TEAL,True,anchor='mt')
+        b.text(layer,(608,477),f'{records[done-1]["angle"]:.2f}°',34,b.TEAL,True,anchor='mt')
     else:
-        b.text(layer,(588,532),'θ',34,b.TEAL,anchor='mt')
-    b.text(layer,(588,591),'Glycerol: 5 trials',19,b.INK,anchor='mt')
-    b.arrow(layer,(387,558),(468,558),b.TEAL,3)
-    b.arrow(layer,(708,558),(799,558),b.TEAL,3)
+        b.text(layer,(608,477),'θ',34,b.TEAL,anchor='mt')
+    draw_cups(b,layer,t)
+    b.arrow(layer,(320,558),(384,558),b.TEAL,3)
+    b.arrow(layer,(832,558),(896,558),b.TEAL,3)
     if TRANSFER<=phase<ARRIVAL and t>=PLAN_START:
         u=smooth((phase-TRANSFER)/(ARRIVAL-TRANSFER))
         # Move the selected numeric command above the connector, then install
         # the same number in the hardware card before revealing the graph point.
-        x=397+(458-397)*u
+        x=326+(378-326)*u
         label=f'{r["angle"]:.2f}°';width=ld.textlength(label,font=b.font(24,True))
-        ld.rounded_rectangle((x-width/2-5,520,x+width/2+5,550),radius=5,fill=b.BG)
-        b.text(layer,(x,524),label,24,b.TEAL,True,anchor='mt')
+        ld.rounded_rectangle((x-width/2-5,496,x+width/2+5,526),radius=5,fill=b.BG)
+        b.text(layer,(x,500),label,24,b.TEAL,True,anchor='mt')
     results_plot(b,layer,t,records)
     im=Image.blend(im,layer,reveal(t,PLAN_START))
     d=ImageDraw.Draw(im);d.rectangle((0,716,b.W,719),fill=b.LINE)

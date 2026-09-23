@@ -70,8 +70,9 @@ CUES={
         (8,12,'The identified viscosity stays fixed as we plan new target volumes.'),
         (12,16,'For each target volume, MPM selects the cup’s tilt angle.'),
         (16,20,'We send that angle to the robot and repeat the pour five times.'),
-        (20,25,'Each point shows the measured mean, with its standard deviation.'),
-        (25,31,'Across all six targets, the largest mean error is 3.8 milliliters.'),
+        (20,23,'These cups show one of the five trials.'),
+        (23,27,'Points show the mean and standard deviation across all five trials.'),
+        (27,31,'Across all six targets, the largest mean error is 3.8 milliliters.'),
         (31,36,'Water uses the same commands, with one trial per target, and overpours.'),
     ],
     'takeaway':[
