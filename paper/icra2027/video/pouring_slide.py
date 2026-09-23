@@ -123,12 +123,12 @@ def identification(b,im):
     b.box(im,(446,159,834,355),b.WHITE,12,b.LINE)
     b.text(im,(640,171),'Identified material law',24,b.TEAL,True,anchor='mt')
     equation=law_equation()
-    scale=37/equation.height
-    equation=equation.resize((round(equation.width*scale),37),Image.Resampling.LANCZOS)
+    scale=31/equation.height
+    equation=equation.resize((round(equation.width*scale),31),Image.Resampling.LANCZOS)
     im.paste(equation,(640-equation.width//2,210),equation)
-    b.text(im,(640,263),'η = 3.44 Pa·s · viscosity',24,b.BLUE,anchor='mt')
-    b.text(im,(640,301),'τ: viscous stress',19,b.INK,anchor='mt')
-    b.text(im,(640,328),'dev D: rate of shape change',19,b.INK,anchor='mt')
+    b.text(im,(640,255),'η = 3.44 Pa·s · effective viscosity',24,b.BLUE,anchor='mt')
+    b.text(im,(640,294),'τ: viscous stress',24,b.INK,anchor='mt')
+    b.text(im,(640,324),'dev D: rate of shape change',24,b.INK,anchor='mt')
 
 
 def results_plot(b,im,t,records):
@@ -200,23 +200,35 @@ def draw(b,t,elapsed):
     replay=planning_frame(b,index,min(1.96,phase))
     b.fit(layer,replay,(48,454,258,176))
     b.text(layer,(177,641),f'Target: {r["target"]:.0f} mL',22,b.INK,anchor='mt')
-    b.text(layer,(608,449),'Selected tilt',20,b.MUTED,anchor='mt')
+    # Symmetric connectors meet the actual tilt card at its vertical midpoint.
+    tilt_box=(502,448,714,520)
+    arrow_y=(tilt_box[1]+tilt_box[3])/2
+    b.box(layer,tilt_box,b.WHITE,12,b.LINE)
+    b.text(layer,(608,454),'Selected tilt',20,b.MUTED,anchor='mt')
     done=completed(t)
+    transferring=TRANSFER<=phase<ARRIVAL and t>=PLAN_START
+    value_layer=layer.copy()
     if done:
-        b.text(layer,(608,477),f'{records[done-1]["angle"]:.2f}°',34,b.TEAL,True,anchor='mt')
+        b.text(value_layer,(608,480),f'{records[done-1]["angle"]:.2f}°',34,b.TEAL,True,anchor='mt')
     else:
-        b.text(layer,(608,477),'θ',34,b.TEAL,anchor='mt')
+        b.text(value_layer,(608,480),'θ',34,b.TEAL,anchor='mt')
+    previous_opacity=1-smooth((phase-TRANSFER)/.15) if transferring else 1
+    layer.paste(Image.blend(layer,value_layer,previous_opacity))
     draw_cups(b,layer,t)
-    b.arrow(layer,(320,558),(384,558),b.TEAL,3)
-    b.arrow(layer,(832,558),(896,558),b.TEAL,3)
-    if TRANSFER<=phase<ARRIVAL and t>=PLAN_START:
+    b.arrow(layer,(320,arrow_y),(tilt_box[0],arrow_y),b.TEAL,3)
+    b.arrow(layer,(tilt_box[2],arrow_y),(896,arrow_y),b.TEAL,3)
+    if transferring:
         u=smooth((phase-TRANSFER)/(ARRIVAL-TRANSFER))
-        # Move the selected numeric command above the connector, then install
-        # the same number in the hardware card before revealing the graph point.
-        x=326+(378-326)*u
-        label=f'{r["angle"]:.2f}°';width=ld.textlength(label,font=b.font(24,True))
-        ld.rounded_rectangle((x-width/2-5,496,x+width/2+5,526),radius=5,fill=b.BG)
-        b.text(layer,(x,500),label,24,b.TEAL,True,anchor='mt')
+        # The same numeric command travels above the incoming arrow and lands
+        # exactly at the permanent value's position and size, without a jump.
+        x=350+(608-350)*u
+        # Settle to the value baseline before entering the card, so the
+        # traveling number never crosses the Selected tilt heading.
+        y=450+30*smooth(u/.55)
+        size=round(24+10*u)
+        label=f'{r["angle"]:.2f}°';width=ld.textlength(label,font=b.font(size,True))
+        ld.rounded_rectangle((x-width/2-4,y-2,x+width/2+4,y+size+2),radius=5,fill=b.WHITE)
+        b.text(layer,(x,y),label,size,b.TEAL,True,anchor='mt')
     results_plot(b,layer,t,records)
     im=Image.blend(im,layer,reveal(t,PLAN_START))
     d=ImageDraw.Draw(im);d.rectangle((0,716,b.W,719),fill=b.LINE)
