@@ -101,7 +101,8 @@ def identification(b,im):
 
 def results_plot(b,im,t,records):
     d=ImageDraw.Draw(im);x0,x1,y0,y1=850,1226,610,445
-    def xy(x,y):return (x0+(x-60)/110*(x1-x0),y0-(y-60)/140*(y0-y1))
+    # Same limits as the paper: the corner is (50, 50), not the first tick.
+    def xy(x,y):return (x0+(x-50)/120*(x1-x0),y0-(y-50)/140*(y0-y1))
     b.text(im,(1040,413),'Measured volume (mL)',24,b.INK,True,anchor='mt')
     for y in [60,100,140,180]:
         py=xy(60,y)[1];d.line((x0,py,x1,py),fill=b.LINE,width=1)
@@ -111,7 +112,7 @@ def results_plot(b,im,t,records):
         b.text(im,(xy(r['target'],60)[0],617),str(int(r['target'])),18,b.MUTED,anchor='mt')
     b.text(im,(1038,641),'Target volume (mL)',19,b.INK,anchor='mt')
     # Identity is a reference, not an MPM result curve.
-    a=np.array(xy(60,60));z=np.array(xy(170,170));length=np.linalg.norm(z-a)
+    a=np.array(xy(50,50));z=np.array(xy(170,170));length=np.linalg.norm(z-a)
     for s in np.arange(0,length,13):
         p=a+(z-a)*s/length;q=a+(z-a)*min(length,s+7)/length
         d.line([tuple(p),tuple(q)],fill='#9aa8b0',width=2)
